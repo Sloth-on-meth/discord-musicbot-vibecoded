@@ -1,6 +1,6 @@
 # 🎶 Discord MusicBot (YouTube audio player)
 
-#THIS IS 100% VIBECODED. LMAO. only gpt4, no typing
+# THIS IS 100% VIBECODED. LMAO. only gpt4, no typing
 
 A simple Python Discord bot that joins voice channels and plays music using YouTube links or search queries. Uses `discord.py`, `yt-dlp`, and `ffmpeg`.
 
