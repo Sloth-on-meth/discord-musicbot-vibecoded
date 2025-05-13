@@ -5,6 +5,7 @@ import asyncio
 import yt_dlp
 import json
 import openai
+import re
 
 # Load config
 with open("config.json", "r") as f:
@@ -16,11 +17,9 @@ client = openai.OpenAI(api_key=config["openai_api_key"])
 intents = discord.Intents.default()
 intents.message_content = True
 
-
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
-        #self.tree = app_commands.CommandTree(self)  # Uncomment this line
 
 bot = MyBot()
 
@@ -51,13 +50,21 @@ async def speak_tts(text: str) -> str:
         f.write(response.content)
     return tts_path
 
-# Music source
+# Music source with recommendations
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title")
         self.url = data.get("url")
+        self.video_id = self.extract_video_id(self.url)
+
+    @staticmethod
+    def extract_video_id(url):
+        # Extract YouTube video ID from URL
+        regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^\"&?\/\s]{11})"
+        match = re.search(regex, url)
+        return match.group(1) if match else None
 
     @classmethod
     async def create_source(cls, search, loop):
@@ -75,37 +82,76 @@ class YTDLSource(discord.PCMVolumeTransformer):
             print(f"[ERROR] Failed to create YTDLSource: {e}")
             raise
 
-# Music queue
+    @classmethod
+    async def get_recommendations(cls, video_id, loop):
+        """Get recommended videos from YouTube"""
+        ytdl_rec_opts = {
+            'extract_flat': True,
+            'quiet': True,
+            'get_related': True,
+            'playlist_items': '1-3'  # Get first 3 recommendations
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ytdl_rec_opts) as ytdl_rec:
+                data = await loop.run_in_executor(
+                    None,
+                    lambda: ytdl_rec.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                )
+                return [f"https://www.youtube.com/watch?v={rec['id']}" 
+                       for rec in data.get('entries', [])[:3] if rec.get('id')]
+        except Exception as e:
+            print(f"[ERROR] Failed to get recommendations: {e}")
+            return []
+
+# Music queue with autoplay
 class MusicQueue:
     def __init__(self):
         self.queue = asyncio.Queue()
         self.next = asyncio.Event()
         self.current = None
+        self.autoplay = True
+        self.last_video_id = None
 
     async def add(self, source):
         await self.queue.put(source)
+        if source.video_id:
+            self.last_video_id = source.video_id
 
     async def player_loop(self, ctx):
         while True:
             self.next.clear()
+            
+            # Autoplay recommendations if queue is empty
+            if self.queue.empty() and self.autoplay and self.last_video_id:
+                try:
+                    recommendations = await YTDLSource.get_recommendations(self.last_video_id, ctx.bot.loop)
+                    if recommendations:
+                        await ctx.send("🔍 Queue empty - adding recommended songs...")
+                        for url in recommendations:
+                            try:
+                                player = await YTDLSource.create_source(url, ctx.bot.loop)
+                                await self.add(player)
+                                await ctx.send(f"➕ Added recommendation: **{player.title}**")
+                            except Exception as e:
+                                print(f"[ERROR] Failed to add recommendation: {e}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to get recommendations: {e}")
+
             self.current = await self.queue.get()
 
-            # TTS
+            # TTS Announcement
             tts_message = f"Now playing {self.current.title}"
             tts_file = await speak_tts(tts_message)
             await ctx.send(f"🔊 {tts_message}")
-            print(f"[INFO] TTS generated: {tts_file}")
 
             done = asyncio.Event()
-
             def after_tts(e):
-                print(f"[INFO] TTS playback finished ({e})")
                 ctx.bot.loop.call_soon_threadsafe(done.set)
-
-            ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file, options="-vn -f s16le -ar 48000 -ac 2"), after=after_tts)
+            ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
             await done.wait()
 
-            print(f"[INFO] Now playing: {self.current.title}")
+            # Play the actual song
             ctx.voice_client.play(
                 self.current,
                 after=lambda _: ctx.bot.loop.call_soon_threadsafe(self.next.set)
@@ -115,19 +161,16 @@ class MusicQueue:
 
 queue = MusicQueue()
 
-# Slash command: /play
+# Slash commands
 @bot.tree.command(name="play", description="Play a song from YouTube")
-@app_commands.describe(query="Search term or YouTube URL")
+@app_commands.describe(query="The song to search for or YouTube URL")
 async def slash_play(interaction: discord.Interaction, query: str):
-    """Play a song from YouTube"""
     await interaction.response.defer()
     
-    # Get the voice client or connect if not connected
     voice_client = interaction.guild.voice_client
     if not voice_client:
         if interaction.user.voice:
             voice_client = await interaction.user.voice.channel.connect()
-            print(f"[INFO] Connected to {interaction.user.voice.channel}")
         else:
             return await interaction.followup.send("❌ You're not in a voice channel.")
 
@@ -136,31 +179,14 @@ async def slash_play(interaction: discord.Interaction, query: str):
     try:
         player = await YTDLSource.create_source(query, loop=bot.loop)
     except Exception as e:
-        print(f"[ERROR] Failed to create source: {e}")
         return await interaction.followup.send("❌ Failed to find or play the requested song.")
 
     await queue.add(player)
     await interaction.followup.send(f"✅ Added to queue: **{player.title}**")
-    print(f"[INFO] Queued: {player.title}")
 
     if not voice_client.is_playing():
-        print("[INFO] Starting playback loop...")
-        # Create a minimal Context object for the player loop
         ctx = await commands.Context.from_interaction(interaction)
         bot.loop.create_task(queue.player_loop(ctx))
-
-# Additional legacy commands (optional to convert)
-from discord import app_commands
-
-@bot.command()
-@commands.is_owner()
-async def sync(ctx: commands.Context):
-    """Sync slash commands (owner only)"""
-    try:
-        synced = await bot.tree.sync()
-        await ctx.send(f"Synced {len(synced)} commands.")
-    except Exception as e:
-        await ctx.send(f"Failed to sync: {e}")
 
 @bot.tree.command(name="skip", description="Skip the current song")
 async def slash_skip(interaction: discord.Interaction):
@@ -177,8 +203,11 @@ async def slash_queue(interaction: discord.Interaction):
         msg = f"**Now Playing**: {queue.current.title}\n"
     else:
         msg = "Nothing playing.\n"
+    
     if queue.queue.empty():
         msg += "_Queue is empty._"
+        if queue.autoplay:
+            msg += "\n🔁 Autoplay is enabled"
     else:
         q = list(queue.queue._queue)
         msg += "**Up Next:**\n" + "\n".join([f"- {track.title}" for track in q])
@@ -194,14 +223,22 @@ async def slash_stop(interaction: discord.Interaction):
         await interaction.response.send_message("Disconnected and cleared queue.")
     else:
         await interaction.response.send_message("Not connected to a voice channel.")
-# on_ready
+
+@bot.tree.command(name="autoplay", description="Toggle autoplay of recommended songs")
+async def slash_autoplay(interaction: discord.Interaction):
+    queue.autoplay = not queue.autoplay
+    status = "✅ enabled" if queue.autoplay else "❌ disabled"
+    await interaction.response.send_message(f"Autoplay is now {status}")
+
+# Bot events
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    # Don't auto-sync here - use the sync command instead during development
-    print("Use !sync command to sync slash commands")
-
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands")
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
 
 # Run the bot
 bot.run(TOKEN)
-
