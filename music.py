@@ -7,7 +7,7 @@ import json
 import openai
 import re
 import random
-
+import uuid
 
 # Load config
 with open("config.json", "r") as f:
@@ -63,7 +63,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @staticmethod
     def extract_video_id(url):
-        # Extract YouTube video ID from URL
         regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^\"&?\/\s]{11})"
         match = re.search(regex, url)
         return match.group(1) if match else None
@@ -74,7 +73,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search, download=False))
             if "entries" in data:
                 data = data["entries"][0]
-            print(f"[INFO] YouTube URL: {data['url']}")
             return cls(discord.FFmpegPCMAudio(
                 data['url'],
                 before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -86,14 +84,12 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def get_recommendations(cls, video_id, loop):
-        """Get recommended videos from YouTube"""
         ytdl_rec_opts = {
             'extract_flat': True,
             'quiet': True,
             'get_related': True,
-            'playlist_items': '1-3'  # Get first 3 recommendations
+            'playlist_items': '1-3'
         }
-        
         try:
             with yt_dlp.YoutubeDL(ytdl_rec_opts) as ytdl_rec:
                 data = await loop.run_in_executor(
@@ -101,7 +97,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     lambda: ytdl_rec.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
                 )
                 return [f"https://www.youtube.com/watch?v={rec['id']}" 
-                       for rec in data.get('entries', [])[:3] if rec.get('id')]
+                        for rec in data.get('entries', [])[:3] if rec.get('id')]
         except Exception as e:
             print(f"[ERROR] Failed to get recommendations: {e}")
             return []
@@ -123,14 +119,12 @@ class MusicQueue:
     async def player_loop(self, ctx):
         while True:
             self.next.clear()
-            
-            # Autoplay recommendations if queue is empty
+
             if self.queue.empty() and self.autoplay and self.last_video_id:
                 try:
                     recommendations = await YTDLSource.get_recommendations(self.last_video_id, ctx.bot.loop)
                     if recommendations:
-                        await ctx.send("🔍 Queue empty - adding recommended songs...")
-                        tts_message= "🔍 Queue empty - adding recommended songs..."
+                        tts_message = "🔍 Queue empty - adding recommended songs..."
                         tts_file = await speak_tts(tts_message)
                         await ctx.send(f"🔊 {tts_message}")
                         for url in recommendations:
@@ -142,13 +136,9 @@ class MusicQueue:
                                 print(f"[ERROR] Failed to add recommendation: {e}")
                 except Exception as e:
                     print(f"[ERROR] Failed to get recommendations: {e}")
-    
+
             self.current = await self.queue.get()
-    
-            # Get a random fact
-            random_fact = await get_random_fact()
-            
-            # TTS Announcement with random fact
+
             tts_message = f"Now playing {self.current.title}. "
             try:
                 random_fact = await get_random_fact()
@@ -160,71 +150,61 @@ class MusicQueue:
 
             tts_file = await speak_tts(tts_message)
             await ctx.send(f"🔊 Now playing: {self.current.title}")
-    
+
             done = asyncio.Event()
             def after_tts(e):
                 ctx.bot.loop.call_soon_threadsafe(done.set)
             ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
             await done.wait()
-    
-            # Play the actual song
+
             ctx.voice_client.play(
                 self.current,
                 after=lambda _: ctx.bot.loop.call_soon_threadsafe(self.next.set)
             )
-            await ctx.send(f"🎶 Now playing: **{self.current.title}**")
-            await self.next.wait()
 
 queue = MusicQueue()
 
+def make_random_fact_prompt():
+    seed = uuid.uuid4().hex[:8]
+    return [
+        {"role": "system", "content": f"Generate a unique and surprising fact in 1-2 sentences. Seed: {seed}"},
+        {"role": "user", "content": "Tell me a random fact"}
+    ]
 
 async def get_random_fact():
-    """Get a random interesting fact from OpenAI (max 2 sentences)"""
     try:
         response = client.chat.completions.create(
             model="gpt-4",
-            messages=[
-                {"role": "system", "content": "Generate one random interesting fact in 1-2 short sentences. Make it fun and surprising."},
-                {"role": "user", "content": "Tell me a random fact"}
-            ],
+            messages=make_random_fact_prompt(),
             max_tokens=50,
-            temperature=0.7
+            temperature=0.9
         )
         fact = response.choices[0].message.content.strip()
-        
-        # Ensure the fact ends with proper punctuation
         if not fact.endswith(('.', '!', '?')):
             fact += '.'
-            
         return fact
     except Exception as e:
         print(f"[ERROR] Failed to get OpenAI fact: {e}")
         return "Did you know this bot can tell you fun facts? Ask me to play another song to hear one!"
-
 
 # Slash commands
 @bot.tree.command(name="play", description="Play a song from YouTube")
 @app_commands.describe(query="The song to search for or YouTube URL")
 async def slash_play(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
-    
     voice_client = interaction.guild.voice_client
     if not voice_client:
         if interaction.user.voice:
             voice_client = await interaction.user.voice.channel.connect()
         else:
             return await interaction.followup.send("❌ You're not in a voice channel.")
-
     await interaction.followup.send(f"🔎 Searching for: `{query}`")
-    
     try:
         player = await YTDLSource.create_source(query, loop=bot.loop)
     except Exception as e:
         return await interaction.followup.send("❌ Failed to find or play the requested song.")
-
     await queue.add(player)
     await interaction.followup.send(f"✅ Added to queue: **{player.title}**")
-
     if not voice_client.is_playing():
         ctx = await commands.Context.from_interaction(interaction)
         bot.loop.create_task(queue.player_loop(ctx))
@@ -244,7 +224,6 @@ async def slash_queue(interaction: discord.Interaction):
         msg = f"**Now Playing**: {queue.current.title}\n"
     else:
         msg = "Nothing playing.\n"
-    
     if queue.queue.empty():
         msg += "_Queue is empty._"
         if queue.autoplay:
@@ -271,7 +250,6 @@ async def slash_autoplay(interaction: discord.Interaction):
     status = "✅ enabled" if queue.autoplay else "❌ disabled"
     await interaction.response.send_message(f"Autoplay is now {status}")
 
-# Bot events
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
@@ -281,5 +259,4 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing commands: {e}")
 
-# Run the bot
 bot.run(TOKEN)
