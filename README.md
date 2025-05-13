@@ -1,40 +1,67 @@
-# 🎶 Discord MusicBot (YouTube audio player)
+# 🎶 Discord MusicBot with TTS Announcements
 
-# THIS IS 100% VIBECODED. LMAO. only gpt4, no typing
+A Python-powered Discord bot that streams audio from YouTube into voice channels and announces the currently playing track using OpenAI's Text-to-Speech (TTS).
 
-A simple Python Discord bot that joins voice channels and plays music using YouTube links or search queries. Uses `discord.py`, `yt-dlp`, and `ffmpeg`.
+### 🚀 Features
 
----
+!play <query or YouTube URL> — Play a song (searches YouTube if not a URL)
 
-## ⚙️ Features
+!skip — Skip the current song
 
-- `!play <query | YouTube URL>` – Searches and plays the first YouTube result
-- `!skip` – Skips the current track
-- `!queue` – Displays what's currently playing and queued
-- `!stop` – Disconnects from voice and clears the queue
-- Automatically joins the command issuer's voice channel
-- Stream audio live via `yt-dlp` and `ffmpeg`
-- Configurable via `config.json`
+!queue — Show current and upcoming songs
 
----
+!stop — Disconnect and clear the queue
 
-## 🚀 Getting Started
+🎙 Announces songs using realistic OpenAI TTS voices
 
-### 1. Install dependencies
+### 🔊 Streams audio via yt-dlp and ffmpeg
 
-```bash
+⚙️ Requirements
+
+Install system dependencies:
+
 sudo apt install ffmpeg
-pip install -U discord.py yt-dlp
-```
 
-### 2. Create config.json
+Install Python packages:
+
+pip install -U discord.py yt-dlp openai httpx
+
+### 📁 Setup
+
+Create a config.json file:
 ```
 {
-  "token": "YOUR_DISCORD_BOT_TOKEN"
+  "token": "YOUR_DISCORD_BOT_TOKEN",
+  "openai_api_key": "YOUR_OPENAI_API_KEY"
 }
 ```
-
-### 3. run the bot
+Run the bot:
 ```
 python3 music.py
 ```
+🧪 Commands
+
+!play hello          # searches YouTube
+!play <youtube_url>  # direct link
+!skip                # skip current track
+!queue               # show queue
+!stop                # stop and leave
+
+🧠 How it Works
+
+yt-dlp fetches audio streams from YouTube
+
+ffmpeg transcodes live to Discord-compatible PCM
+
+OpenAI TTS generates mp3 intro clips like: “Now playing Never Gonna Give You Up, requested by Sam.”
+
+🔐 Legal & Notes
+
+This bot is for educational/personal use only.
+Using YouTube content in public servers may violate TOS.
+OpenAI API usage is billable — keep an eye on usage.
+
+✨ Attribution
+
+This bot was 100% written by ChatGPT via prompts.
+I typed nothing but vibes. 😎
