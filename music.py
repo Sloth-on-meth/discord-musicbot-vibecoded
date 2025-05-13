@@ -6,6 +6,8 @@ import yt_dlp
 import json
 import openai
 import re
+import random
+
 
 # Load config
 with open("config.json", "r") as f:
@@ -128,6 +130,9 @@ class MusicQueue:
                     recommendations = await YTDLSource.get_recommendations(self.last_video_id, ctx.bot.loop)
                     if recommendations:
                         await ctx.send("🔍 Queue empty - adding recommended songs...")
+                        tts_message= "🔍 Queue empty - adding recommended songs..."
+                        tts_file = await speak_tts(tts_message)
+                        await ctx.send(f"🔊 {tts_message}")
                         for url in recommendations:
                             try:
                                 player = await YTDLSource.create_source(url, ctx.bot.loop)
@@ -137,20 +142,31 @@ class MusicQueue:
                                 print(f"[ERROR] Failed to add recommendation: {e}")
                 except Exception as e:
                     print(f"[ERROR] Failed to get recommendations: {e}")
-
+    
             self.current = await self.queue.get()
+    
+            # Get a random fact
+            random_fact = await get_random_fact()
+            
+            # TTS Announcement with random fact
+            tts_message = f"Now playing {self.current.title}. "
+            try:
+                random_fact = await get_random_fact()
+                tts_message += f"Fun fact: {random_fact}"
+                await ctx.send(f"💡 Fun Fact: {random_fact}")
+            except Exception as e:
+                print(f"[ERROR] Failed to get fact: {e}")
+                tts_message += "Enjoy the music!"
 
-            # TTS Announcement
-            tts_message = f"Now playing {self.current.title}"
             tts_file = await speak_tts(tts_message)
-            await ctx.send(f"🔊 {tts_message}")
-
+            await ctx.send(f"🔊 Now playing: {self.current.title}")
+    
             done = asyncio.Event()
             def after_tts(e):
                 ctx.bot.loop.call_soon_threadsafe(done.set)
             ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
             await done.wait()
-
+    
             # Play the actual song
             ctx.voice_client.play(
                 self.current,
@@ -160,6 +176,31 @@ class MusicQueue:
             await self.next.wait()
 
 queue = MusicQueue()
+
+
+async def get_random_fact():
+    """Get a random interesting fact from OpenAI (max 2 sentences)"""
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Generate one random interesting fact in 1-2 short sentences. Make it fun and surprising."},
+                {"role": "user", "content": "Tell me a random fact"}
+            ],
+            max_tokens=50,
+            temperature=0.7
+        )
+        fact = response.choices[0].message.content.strip()
+        
+        # Ensure the fact ends with proper punctuation
+        if not fact.endswith(('.', '!', '?')):
+            fact += '.'
+            
+        return fact
+    except Exception as e:
+        print(f"[ERROR] Failed to get OpenAI fact: {e}")
+        return "Did you know this bot can tell you fun facts? Ask me to play another song to hear one!"
+
 
 # Slash commands
 @bot.tree.command(name="play", description="Play a song from YouTube")
