@@ -1,4 +1,4 @@
-```
+
 Discord Music Bot
 
 A feature-rich Discord music bot built with discord.py, yt-dlp, and openai that allows users to play music from YouTube, manage queues, get autoplay recommendations, and hear fun facts via Text-to-Speech.
