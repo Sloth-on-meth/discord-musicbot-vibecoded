@@ -138,54 +138,56 @@ class MusicQueue:
                     print(f"[ERROR] Failed to get recommendations: {e}")
 
             self.current = await self.queue.get()
+            await ctx.send(f"🎶 Now playing: **{self.current.title}**")
 
-            tts_message = f"Now playing {self.current.title}. "
+            # 🔊 TTS announcement
             try:
-                random_fact = await get_random_fact()
-                tts_message += f"Fun fact: {random_fact}"
-                await ctx.send(f"💡 Fun Fact: {random_fact}")
+                tts_text = f"Now playing: {self.current.title}"
+                tts_file = await speak_tts(tts_text)
+
+                # Wait for TTS to finish before playing song
+                tts_done = asyncio.Event()
+                def after_tts(e):
+                    ctx.bot.loop.call_soon_threadsafe(tts_done.set)
+                ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
+                await tts_done.wait()
             except Exception as e:
-                print(f"[ERROR] Failed to get fact: {e}")
-                tts_message += "Enjoy the music!"
+                print(f"[ERROR] Failed to TTS announce: {e}")
 
-            tts_file = await speak_tts(tts_message)
-            await ctx.send(f"🔊 Now playing: {self.current.title}")
-
-            done = asyncio.Event()
-            def after_tts(e):
-                ctx.bot.loop.call_soon_threadsafe(done.set)
-            ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
-            await done.wait()
-
+            # ▶️ Play the actual song
             ctx.voice_client.play(
                 self.current,
-                after=lambda _: ctx.bot.loop.call_soon_threadsafe(self.next.set)
+                after=lambda e: ctx.bot.loop.call_soon_threadsafe(self.next.set)
             )
+
+            await self.next.wait()
+
+
 
 queue = MusicQueue()
 
-def make_random_fact_prompt():
-    seed = uuid.uuid4().hex[:8]
-    return [
-        {"role": "system", "content": f"Generate a unique and surprising fact in 1-2 sentences. Seed: {seed}"},
-        {"role": "user", "content": "Tell me a random fact"}
-    ]
-
-async def get_random_fact():
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=make_random_fact_prompt(),
-            max_tokens=50,
-            temperature=0.9
-        )
-        fact = response.choices[0].message.content.strip()
-        if not fact.endswith(('.', '!', '?')):
-            fact += '.'
-        return fact
-    except Exception as e:
-        print(f"[ERROR] Failed to get OpenAI fact: {e}")
-        return "Did you know this bot can tell you fun facts? Ask me to play another song to hear one!"
+#def make_random_fact_prompt():
+#    seed = uuid.uuid4().hex[:8]
+#    return [
+#        {"role": "system", "content": f"Generate a unique and surprising fact in 1-2 sentences. Seed: {seed}"},
+#        {"role": "user", "content": "Tell me a random fact"}
+#    ]
+#
+#async def get_random_fact():
+#    try:
+#        response = client.chat.completions.create(
+#            model="gpt-4",
+#            messages=make_random_fact_prompt(),
+#            max_tokens=50,
+#            temperature=0.9
+#        )
+#        fact = response.choices[0].message.content.strip()
+#        if not fact.endswith(('.', '!', '?')):
+#            fact += '.'
+#        return fact
+#    except Exception as e:
+#        print(f"[ERROR] Failed to get OpenAI fact: {e}")
+#        return "Did you know this bot can tell you fun facts? Ask me to play another song to hear one!"
 
 # Slash commands
 @bot.tree.command(name="play", description="Play a song from YouTube")
@@ -250,6 +252,37 @@ async def slash_autoplay(interaction: discord.Interaction):
     status = "✅ enabled" if queue.autoplay else "❌ disabled"
     await interaction.response.send_message(f"Autoplay is now {status}")
 
+
+
+@bot.tree.command(name="tittiestts", description="Pause music, speak something with TTS, then resume")
+@app_commands.describe(text="What you want the bot to say out loud")
+async def slash_tittiestts(interaction: discord.Interaction, text: str):
+    await interaction.response.defer()
+    voice = interaction.guild.voice_client
+
+    if not voice or not voice.is_playing():
+        await interaction.followup.send("❌ Nothing is currently playing.")
+        return
+
+    # Pause playback
+    voice.pause()
+    await interaction.followup.send("⏸ Paused music for TTS...")
+
+    try:
+        tts_file = await speak_tts(text)
+        done = asyncio.Event()
+
+        def after_tts(e):
+            interaction.client.loop.call_soon_threadsafe(done.set)
+
+        voice.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
+        await done.wait()
+    except Exception as e:
+        print(f"[ERROR] TTS failed: {e}")
+        await interaction.followup.send("❌ Failed to generate or play TTS.")
+    finally:
+        voice.resume()
+        await interaction.followup.send("▶️ Resumed music.")
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
