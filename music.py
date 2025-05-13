@@ -5,6 +5,9 @@ import yt_dlp
 import functools
 import itertools
 import json
+import openai
+
+
 with open("config.json", "r") as f:
     config = json.load(f)
 
@@ -13,7 +16,7 @@ TOKEN = config["token"]
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
-
+client = openai.OpenAI(api_key=config["openai_api_key"])
 ytdl_opts = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -28,6 +31,19 @@ ffmpeg_opts = {
 }
 
 ytdl = yt_dlp.YoutubeDL(ytdl_opts)
+async def speak_tts(text: str) -> str:
+    tts_path = "now_playing.mp3"
+    response = client.audio.speech.create(
+        model="tts-1",
+        voice="alloy",
+        input=text,
+        response_format="mp3"
+    )
+    with open(tts_path, "wb") as f:
+        f.write(response.content)  # not await, just .content
+    return tts_path
+
+
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
@@ -68,10 +84,32 @@ class MusicQueue:
         while True:
             self.next.clear()
             self.current = await self.queue.get()
+    
+            # 1. Generate TTS
+            tts_message = f"Now playing {self.current.title}, requested by {ctx.author.display_name}"
+            tts_file = await speak_tts(tts_message)
+            await ctx.send(f"🔊 {tts_message}")
+            print(f"[INFO] TTS generated: {tts_file}")
+    
+            # 2. Play TTS and wait for it to finish
+            done = asyncio.Event()
+    
+            def after_tts(e):
+                print(f"[INFO] TTS playback finished ({e})")
+                ctx.bot.loop.call_soon_threadsafe(done.set)
+    
+            ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file, options="-vn -f s16le -ar 48000 -ac 2"), after=after_tts)
+            await done.wait()
+    
+            # 3. Now play actual song
             print(f"[INFO] Now playing: {self.current.title}")
-            ctx.voice_client.play(self.current, after=lambda _: ctx.bot.loop.call_soon_threadsafe(self.next.set))
+            ctx.voice_client.play(
+                self.current,
+                after=lambda _: ctx.bot.loop.call_soon_threadsafe(self.next.set)
+            )
             await ctx.send(f"🎶 Now playing: **{self.current.title}**")
             await self.next.wait()
+
 
 queue = MusicQueue()
 
