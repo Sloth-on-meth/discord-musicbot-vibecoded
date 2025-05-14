@@ -190,6 +190,7 @@ queue = MusicQueue()
 #        return "Did you know this bot can tell you fun facts? Ask me to play another song to hear one!"
 
 # Slash commands
+
 @bot.tree.command(name="play", description="Play a song from YouTube")
 @app_commands.describe(query="The song to search for or YouTube URL")
 async def slash_play(interaction: discord.Interaction, query: str):
@@ -204,12 +205,40 @@ async def slash_play(interaction: discord.Interaction, query: str):
     try:
         player = await YTDLSource.create_source(query, loop=bot.loop)
     except Exception as e:
+        print(f"[ERROR] Failed to find or play song: {e}")
         return await interaction.followup.send("❌ Failed to find or play the requested song.")
     await queue.add(player)
     await interaction.followup.send(f"✅ Added to queue: **{player.title}**")
     if not voice_client.is_playing():
         ctx = await commands.Context.from_interaction(interaction)
         bot.loop.create_task(queue.player_loop(ctx))
+
+@bot.tree.command(name="pause", description="Pause the current music")
+async def slash_pause(interaction: discord.Interaction):
+    voice = interaction.guild.voice_client
+
+    if not voice or not voice.is_playing():
+        return await interaction.response.send_message("❌ Nothing is currently playing.", ephemeral=True)
+
+    voice.pause()
+    user = interaction.user.display_name
+    tts_message = f"Music paused by {user}."
+    
+    try:
+        tts_file = await speak_tts(tts_message)
+        tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1.5)
+
+        tts_done = asyncio.Event()
+
+        def after_tts(e):
+            interaction.client.loop.call_soon_threadsafe(tts_done.set)
+
+        voice.play(tts_audio, after=after_tts)
+        await interaction.response.send_message(f"⏸ Paused music (requested by **{user}**).")
+        await tts_done.wait()
+    except Exception as e:
+        print(f"[ERROR] TTS failed: {e}")
+        await interaction.followup.send("❌ TTS announcement failed.")
 
 @bot.tree.command(name="skip", description="Skip the current song")
 async def slash_skip(interaction: discord.Interaction):
@@ -254,35 +283,56 @@ async def slash_autoplay(interaction: discord.Interaction):
 
 
 
+
 @bot.tree.command(name="tittiestts", description="Pause music, speak something with TTS, then resume")
 @app_commands.describe(text="What you want the bot to say out loud")
 async def slash_tittiestts(interaction: discord.Interaction, text: str):
     await interaction.response.defer()
     voice = interaction.guild.voice_client
 
-    if not voice or not voice.is_playing():
-        await interaction.followup.send("❌ Nothing is currently playing.")
-        return
+    if not voice:
+        if interaction.user.voice:
+            voice = await interaction.user.voice.channel.connect()
+        else:
+            return await interaction.followup.send("❌ You're not in a voice channel.")
 
-    # Pause playback
-    voice.pause()
-    await interaction.followup.send("⏸ Paused music for TTS...")
-
+    # Generate TTS before pausing the music
     try:
         tts_file = await speak_tts(text)
-        done = asyncio.Event()
+    except Exception as e:
+        print(f"[ERROR] TTS generation failed: {e}")
+        return await interaction.followup.send("❌ Failed to generate TTS audio.")
+
+    was_playing = voice.is_playing()
+    current_source = voice.source if was_playing else None
+
+    if was_playing:
+        voice.pause()
+        await interaction.followup.send("⏸ Music paused. Speaking...")
+    else:
+        await interaction.followup.send("🔊 Speaking without interrupting music...")
+
+    try:
+        tts_done = asyncio.Event()
 
         def after_tts(e):
-            interaction.client.loop.call_soon_threadsafe(done.set)
+            interaction.client.loop.call_soon_threadsafe(tts_done.set)
 
-        voice.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
-        await done.wait()
+        tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1.5)
+        voice.play(tts_audio, after=after_tts)
+
+        await tts_done.wait()
+
+        if was_playing and current_source:
+            voice.play(current_source, after=lambda e: queue.next.set())
+            await interaction.followup.send("▶️ Resumed music.")
+        else:
+            await interaction.followup.send("✅ TTS finished.")
     except Exception as e:
-        print(f"[ERROR] TTS failed: {e}")
-        await interaction.followup.send("❌ Failed to generate or play TTS.")
-    finally:
-        voice.resume()
-        await interaction.followup.send("▶️ Resumed music.")
+        print(f"[ERROR] TTS playback failed: {e}")
+        await interaction.followup.send("❌ Failed to play TTS audio.")
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
