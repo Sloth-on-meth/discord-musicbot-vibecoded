@@ -55,7 +55,7 @@ async def speak_tts(text: str) -> str:
 
 # Music source with recommendations
 class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.5):
+    def __init__(self, source, *, data, volume=1):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title")
@@ -192,6 +192,16 @@ queue = MusicQueue()
 
 # Slash commands
 
+async def log_to_discord(bot, message: str):
+    log_channel_id = config.get("musicbot_log_channel")
+    channel = bot.get_channel(log_channel_id)
+    if channel:
+        await channel.send(message)
+    else:
+        print("[ERROR] Logging channel not found.")
+
+
+
 @bot.tree.command(name="play", description="Play a song from YouTube")
 @app_commands.describe(query="The song to search for or YouTube URL")
 async def slash_play(interaction: discord.Interaction, query: str):
@@ -207,30 +217,33 @@ async def slash_play(interaction: discord.Interaction, query: str):
         player = await YTDLSource.create_source(query, loop=bot.loop)
     except Exception as e:
         print(f"[ERROR] Failed to find or play song: {e}")
-        return await interaction.followup.send("❌ Failed to find or play the requested song.")
+        await interaction.followup.send("❌ Failed to find or play the requested song.")
+        return
     await queue.add(player)
     await interaction.followup.send(f"✅ Added to queue: **{player.title}**")
     if not voice_client.is_playing():
         ctx = await commands.Context.from_interaction(interaction)
         bot.loop.create_task(queue.player_loop(ctx))
 
+    # Logging
+    await log_to_discord(bot, f"[{interaction.created_at:%Y-%m-%d %H:%M:%S}] `/play` command by **{interaction.user.display_name}** (`{interaction.user.id}`): `{query}`")
+
+
 @bot.tree.command(name="pause", description="Pause the current music")
 async def slash_pause(interaction: discord.Interaction):
     voice = interaction.guild.voice_client
-
     if not voice or not voice.is_playing():
         return await interaction.response.send_message("❌ Nothing is currently playing.", ephemeral=True)
 
     voice.pause()
     user = interaction.user.display_name
     tts_message = f"Music paused by {user}."
-    
+
     try:
         tts_file = await speak_tts(tts_message)
-        tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1.5)
+        tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1)
 
         tts_done = asyncio.Event()
-
         def after_tts(e):
             interaction.client.loop.call_soon_threadsafe(tts_done.set)
 
@@ -240,6 +253,10 @@ async def slash_pause(interaction: discord.Interaction):
     except Exception as e:
         print(f"[ERROR] TTS failed: {e}")
         await interaction.followup.send("❌ TTS announcement failed.")
+
+    # Logging
+    await log_to_discord(bot, f"[{interaction.created_at:%Y-%m-%d %H:%M:%S}] `/pause` command by **{interaction.user.display_name}** (`{interaction.user.id}`)")
+
 
 @bot.tree.command(name="skip", description="Skip the current song")
 async def slash_skip(interaction: discord.Interaction):
@@ -322,7 +339,7 @@ async def slash_tittiestts(interaction: discord.Interaction, text: str):
             def after_tts(e):
                 interaction.client.loop.call_soon_threadsafe(tts_done.set)
 
-            tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1.5)
+            tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1)
             voice.play(tts_audio, after=after_tts)
 
             await tts_done.wait()
