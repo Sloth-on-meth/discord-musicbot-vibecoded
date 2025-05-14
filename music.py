@@ -8,6 +8,7 @@ import openai
 import re
 import random
 import uuid
+tts_lock = asyncio.Lock()
 
 # Load config
 with open("config.json", "r") as f:
@@ -296,41 +297,44 @@ async def slash_tittiestts(interaction: discord.Interaction, text: str):
         else:
             return await interaction.followup.send("❌ You're not in a voice channel.")
 
-    # Generate TTS before pausing the music
-    try:
-        tts_file = await speak_tts(text)
-    except Exception as e:
-        print(f"[ERROR] TTS generation failed: {e}")
-        return await interaction.followup.send("❌ Failed to generate TTS audio.")
+    if tts_lock.locked():
+        return await interaction.followup.send("⚠️ Another TTS command is currently running. Please wait and try again.", ephemeral=True)
 
-    was_playing = voice.is_playing()
-    current_source = voice.source if was_playing else None
+    async with tts_lock:
+        try:
+            tts_file = await speak_tts(text)
+        except Exception as e:
+            print(f"[ERROR] TTS generation failed: {e}")
+            return await interaction.followup.send("❌ Failed to generate TTS audio.")
 
-    if was_playing:
-        voice.pause()
-        await interaction.followup.send("⏸ Music paused. Speaking...")
-    else:
-        await interaction.followup.send("🔊 Speaking without interrupting music...")
+        was_playing = voice.is_playing()
+        current_source = voice.source if was_playing else None
 
-    try:
-        tts_done = asyncio.Event()
-
-        def after_tts(e):
-            interaction.client.loop.call_soon_threadsafe(tts_done.set)
-
-        tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1.5)
-        voice.play(tts_audio, after=after_tts)
-
-        await tts_done.wait()
-
-        if was_playing and current_source:
-            voice.play(current_source, after=lambda e: queue.next.set())
-            await interaction.followup.send("▶️ Resumed music.")
+        if was_playing:
+            voice.pause()
+            await interaction.followup.send(f"⏸ Music paused by **{interaction.user.display_name}**. Speaking...")
         else:
-            await interaction.followup.send("✅ TTS finished.")
-    except Exception as e:
-        print(f"[ERROR] TTS playback failed: {e}")
-        await interaction.followup.send("❌ Failed to play TTS audio.")
+            await interaction.followup.send("🔊 Speaking...")
+
+        try:
+            tts_done = asyncio.Event()
+
+            def after_tts(e):
+                interaction.client.loop.call_soon_threadsafe(tts_done.set)
+
+            tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1.5)
+            voice.play(tts_audio, after=after_tts)
+
+            await tts_done.wait()
+
+            if was_playing and current_source:
+                voice.play(current_source, after=lambda e: queue.next.set())
+                await interaction.followup.send("▶️ Resumed music.")
+            else:
+                await interaction.followup.send("✅ TTS finished.")
+        except Exception as e:
+            print(f"[ERROR] TTS playback failed: {e}")
+            await interaction.followup.send("❌ Failed to play TTS audio.")
 
 
 @bot.event
