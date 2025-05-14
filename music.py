@@ -55,7 +55,7 @@ async def speak_tts(text: str) -> str:
 
 # Music source with recommendations
 class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=1):
+    def __init__(self, source, *, data, volume=0.3):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title")
