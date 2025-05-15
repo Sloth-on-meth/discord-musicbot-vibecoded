@@ -360,9 +360,9 @@ async def check_voice_channels():
                 else:
                     # Check if we've been alone for 5 minutes (300 seconds)
                     alone_time = asyncio.get_event_loop().time() - voice_client.alone_since
-                    if alone_time >= 3:
+                    if alone_time >= 6:
                         try:
-                            await log_to_discord(bot, f"🔌 Disconnected from {voice_client.channel.name} in {guild.name} after being alone for 5 minutes.")
+                            await log_to_discord(bot, f"🔌 Disconnected from {voice_client.channel.name} in {guild.name} after being alone for {alone_time} seconds.")
                             await voice_client.disconnect()
                             # Clear the queue
                             queue.queue = asyncio.Queue()
