@@ -19,6 +19,7 @@ client = openai.OpenAI(api_key=config["openai_api_key"])
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True  # Needed for voice state updates
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -40,6 +41,12 @@ ffmpeg_opts = {
 }
 ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
+# Helper function to check if bot is alone
+def is_bot_alone(voice_client):
+    if not voice_client or not voice_client.channel:
+        return False
+    return len([m for m in voice_client.channel.members if not m.bot]) == 0
+
 # TTS function
 async def speak_tts(text: str) -> str:
     tts_path = "now_playing.mp3"
@@ -55,7 +62,7 @@ async def speak_tts(text: str) -> str:
 
 # Music source with recommendations
 class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.3):
+    def __init__(self, source, *, data, volume=0.1):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title")
@@ -163,45 +170,23 @@ class MusicQueue:
 
             await self.next.wait()
 
-
-
 queue = MusicQueue()
-
-#def make_random_fact_prompt():
-#    seed = uuid.uuid4().hex[:8]
-#    return [
-#        {"role": "system", "content": f"Generate a unique and surprising fact in 1-2 sentences. Seed: {seed}"},
-#        {"role": "user", "content": "Tell me a random fact"}
-#    ]
-#
-#async def get_random_fact():
-#    try:
-#        response = client.chat.completions.create(
-#            model="gpt-4",
-#            messages=make_random_fact_prompt(),
-#            max_tokens=50,
-#            temperature=0.9
-#        )
-#        fact = response.choices[0].message.content.strip()
-#        if not fact.endswith(('.', '!', '?')):
-#            fact += '.'
-#        return fact
-#    except Exception as e:
-#        print(f"[ERROR] Failed to get OpenAI fact: {e}")
-#        return "Did you know this bot can tell you fun facts? Ask me to play another song to hear one!"
-
-# Slash commands
 
 async def log_to_discord(bot, message: str):
     log_channel_id = config.get("musicbot_log_channel")
-    channel = bot.get_channel(log_channel_id)
-    if channel:
-        await channel.send(message)
+    if log_channel_id:
+        channel = bot.get_channel(log_channel_id)
+        if channel:
+            try:
+                await channel.send(message)
+            except Exception as e:
+                print(f"[ERROR] Failed to send log message: {e}")
+        else:
+            print("[ERROR] Logging channel not found.")
     else:
-        print("[ERROR] Logging channel not found.")
+        print("[WARNING] No log channel configured in config.json")
 
-
-
+# Slash commands
 @bot.tree.command(name="play", description="Play a song from YouTube")
 @app_commands.describe(query="The song to search for or YouTube URL")
 async def slash_play(interaction: discord.Interaction, query: str):
@@ -227,7 +212,6 @@ async def slash_play(interaction: discord.Interaction, query: str):
 
     # Logging
     await log_to_discord(bot, f"[{interaction.created_at:%Y-%m-%d %H:%M:%S}] `/play` command by **{interaction.user.display_name}** (`{interaction.user.id}`): `{query}`")
-
 
 @bot.tree.command(name="pause", description="Pause the current music")
 async def slash_pause(interaction: discord.Interaction):
@@ -257,7 +241,6 @@ async def slash_pause(interaction: discord.Interaction):
     # Logging
     await log_to_discord(bot, f"[{interaction.created_at:%Y-%m-%d %H:%M:%S}] `/pause` command by **{interaction.user.display_name}** (`{interaction.user.id}`)")
 
-
 @bot.tree.command(name="skip", description="Skip the current song")
 async def slash_skip(interaction: discord.Interaction):
     voice = interaction.guild.voice_client
@@ -286,9 +269,11 @@ async def slash_queue(interaction: discord.Interaction):
 async def slash_stop(interaction: discord.Interaction):
     voice = interaction.guild.voice_client
     if voice:
+        await log_to_discord(bot, f"🔌 Disconnected from {voice.channel.name} in {interaction.guild.name} by command from {interaction.user.display_name}")
         voice.stop()
         await voice.disconnect()
         queue.queue = asyncio.Queue()
+        queue.current = None
         await interaction.response.send_message("Disconnected and cleared queue.")
     else:
         await interaction.response.send_message("Not connected to a voice channel.")
@@ -298,9 +283,6 @@ async def slash_autoplay(interaction: discord.Interaction):
     queue.autoplay = not queue.autoplay
     status = "✅ enabled" if queue.autoplay else "❌ disabled"
     await interaction.response.send_message(f"Autoplay is now {status}")
-
-
-
 
 @bot.tree.command(name="tittiestts", description="Pause music, speak something with TTS, then resume")
 @app_commands.describe(text="What you want the bot to say out loud")
@@ -353,6 +335,45 @@ async def slash_tittiestts(interaction: discord.Interaction, text: str):
             print(f"[ERROR] TTS playback failed: {e}")
             await interaction.followup.send("❌ Failed to play TTS audio.")
 
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Ignore our own voice state changes
+    if member.id == bot.user.id:
+        return
+    
+    voice_client = member.guild.voice_client
+    if voice_client and voice_client.channel == before.channel:
+        if is_bot_alone(voice_client):
+            voice_client.alone_since = asyncio.get_event_loop().time()
+        elif hasattr(voice_client, 'alone_since'):
+            del voice_client.alone_since
+
+async def check_voice_channels():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        for guild in bot.guilds:
+            voice_client = guild.voice_client
+            if voice_client and is_bot_alone(voice_client):
+                # If we're alone and not in the grace period yet, start tracking
+                if not hasattr(voice_client, 'alone_since'):
+                    voice_client.alone_since = asyncio.get_event_loop().time()
+                else:
+                    # Check if we've been alone for 5 minutes (300 seconds)
+                    alone_time = asyncio.get_event_loop().time() - voice_client.alone_since
+                    if alone_time >= 3:
+                        try:
+                            await log_to_discord(bot, f"🔌 Disconnected from {voice_client.channel.name} in {guild.name} after being alone for 5 minutes.")
+                            await voice_client.disconnect()
+                            # Clear the queue
+                            queue.queue = asyncio.Queue()
+                            queue.current = None
+                        except Exception as e:
+                            print(f"Error disconnecting from voice: {e}")
+            elif voice_client and hasattr(voice_client, 'alone_since'):
+                # Someone joined - reset the timer
+                del voice_client.alone_since
+        
+        await asyncio.sleep(10)  # Check every 10 seconds
 
 @bot.event
 async def on_ready():
@@ -362,5 +383,6 @@ async def on_ready():
         print(f"Synced {len(synced)} commands")
     except Exception as e:
         print(f"Error syncing commands: {e}")
+    bot.loop.create_task(check_voice_channels())
 
 bot.run(TOKEN)
