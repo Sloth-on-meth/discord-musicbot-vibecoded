@@ -1,33 +1,20 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 import asyncio
 import yt_dlp
 import json
 import openai
 import re
-import random
-import uuid
-tts_lock = asyncio.Lock()
 
 # Load config
 with open("config.json", "r") as f:
     config = json.load(f)
 
 TOKEN = config["token"]
+log_channel_id = config.get("musicbot_log_channel")
+
 client = openai.OpenAI(api_key=config["openai_api_key"])
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.voice_states = True  # Needed for voice state updates
-
-class MyBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
-
-bot = MyBot()
-
-# YouTube DL
 ytdl_opts = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -35,354 +22,232 @@ ytdl_opts = {
     'default_search': 'ytsearch1',
     'source_address': '0.0.0.0',
 }
-ffmpeg_opts = {
-    'before_options': '-nostdin',
-    'options': '-vn',
-}
 ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
-# Helper function to check if bot is alone
-def is_bot_alone(voice_client):
-    if not voice_client or not voice_client.channel:
-        return False
-    return len([m for m in voice_client.channel.members if not m.bot]) == 0
+intents = discord.Intents.default()
+intents.message_content = True
+intents.voice_states = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# TTS function
+# Helper: embed logger
+def make_embed(desc: str, color=discord.Color.blurple(), thumb: str = None):
+    embed = discord.Embed(description=desc, color=color, timestamp=discord.utils.utcnow())
+    if thumb:
+        embed.set_thumbnail(url=thumb)
+    return embed
+
+async def log_embed(message: str, color=discord.Color.blurple()):
+    if not log_channel_id:
+        print("No log channel configured.")
+        return
+    chan = bot.get_channel(log_channel_id)
+    if not chan:
+        print("Log channel not found.")
+        return
+    embed = make_embed(message, color)
+    await chan.send(embed=embed)
+
+# TTS
+tts_lock = asyncio.Lock()
 async def speak_tts(text: str) -> str:
-    tts_path = "now_playing.mp3"
-    response = client.audio.speech.create(
-        model="tts-1",
-        voice="alloy",
-        input=text,
-        response_format="mp3"
-    )
-    with open(tts_path, "wb") as f:
-        f.write(response.content)
-    return tts_path
+    path = "now.mp3"
+    resp = client.audio.speech.create(model="tts-1", voice="alloy", input=text, response_format="mp3")
+    with open(path, "wb") as f:
+        f.write(resp.content)
+    return path
 
-# Music source with recommendations
-class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.1):
-        super().__init__(source, volume)
-        self.data = data
+# Music source
+def extract_vid_id(url):
+    m = re.search(r"(?:youtube\.com/.+v=|youtu\.be/)([^&?]{11})", url)
+    return m.group(1) if m else None
+
+class YTDLSource:
+    def __init__(self, data):
         self.title = data.get("title")
         self.url = data.get("url")
-        self.video_id = self.extract_video_id(self.url)
-
-    @staticmethod
-    def extract_video_id(url):
-        regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^\"&?\/\s]{11})"
-        match = re.search(regex, url)
-        return match.group(1) if match else None
+        self.thumbnail = data.get("thumbnail")
+        self.video_id = extract_vid_id(self.url)
 
     @classmethod
-    async def create_source(cls, search, loop):
-        try:
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search, download=False))
-            if "entries" in data:
-                data = data["entries"][0]
-            return cls(discord.FFmpegPCMAudio(
-                data['url'],
-                before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                options='-vn -f s16le -ar 48000 -ac 2 -loglevel debug'
-            ), data=data)
-        except Exception as e:
-            print(f"[ERROR] Failed to create YTDLSource: {e}")
-            raise
+    async def from_query(cls, query, loop):
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+        if "entries" in data:
+            data = data["entries"][0]
+        return cls(data)
 
     @classmethod
-    async def get_recommendations(cls, video_id, loop):
-        ytdl_rec_opts = {
-            'extract_flat': True,
-            'quiet': True,
-            'get_related': True,
-            'playlist_items': '1-3'
-        }
-        try:
-            with yt_dlp.YoutubeDL(ytdl_rec_opts) as ytdl_rec:
-                data = await loop.run_in_executor(
-                    None,
-                    lambda: ytdl_rec.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                )
-                return [f"https://www.youtube.com/watch?v={rec['id']}" 
-                        for rec in data.get('entries', [])[:3] if rec.get('id')]
-        except Exception as e:
-            print(f"[ERROR] Failed to get recommendations: {e}")
-            return []
+    async def get_recommendations(cls, vid_id, loop):
+        opts = {'extract_flat': True, 'quiet': True, 'get_related': True, 'playlist_items': '1-3'}
+        with yt_dlp.YoutubeDL(opts) as ytdl_r:
+            data = await loop.run_in_executor(None, lambda: ytdl_r.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=False))
+            return [f"https://www.youtube.com/watch?v={e['id']}" for e in data.get('entries', [])]
 
-# Music queue with autoplay
+# Queue
 class MusicQueue:
     def __init__(self):
         self.queue = asyncio.Queue()
-        self.next = asyncio.Event()
         self.current = None
         self.autoplay = True
-        self.last_video_id = None
+        self.last_vid = None
+        self.next_event = asyncio.Event()
 
-    async def add(self, source):
-        await self.queue.put(source)
-        if source.video_id:
-            self.last_video_id = source.video_id
+    async def add(self, src):
+        await self.queue.put(src)
+        if src.video_id:
+            self.last_vid = src.video_id
+        await log_embed(f"Added to queue: **{src.title}**", discord.Color.green())
 
-    async def player_loop(self, ctx):
+    async def player_loop(self, ctx, embed_msg):
         while True:
-            self.next.clear()
-
-            if self.queue.empty() and self.autoplay and self.last_video_id:
-                try:
-                    recommendations = await YTDLSource.get_recommendations(self.last_video_id, ctx.bot.loop)
-                    if recommendations:
-                        tts_message = "🔍 Queue empty - adding recommended songs..."
-                        tts_file = await speak_tts(tts_message)
-                        await ctx.send(f"🔊 {tts_message}")
-                        for url in recommendations:
-                            try:
-                                player = await YTDLSource.create_source(url, ctx.bot.loop)
-                                await self.add(player)
-                                await ctx.send(f"➕ Added recommendation: **{player.title}**")
-                            except Exception as e:
-                                print(f"[ERROR] Failed to add recommendation: {e}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to get recommendations: {e}")
-
-            self.current = await self.queue.get()
-            await ctx.send(f"🎶 Now playing: **{self.current.title}**")
-
-            # 🔊 TTS announcement
+            self.next_event.clear()
+            if self.queue.empty() and self.autoplay and self.last_vid:
+                recs = await YTDLSource.get_recommendations(self.last_vid, bot.loop)
+                if recs:
+                    info_embed = make_embed("Queue empty, fetching recommendations...", discord.Color.blue())
+                    await embed_msg.edit(embed=info_embed)
+                    for url in recs:
+                        try:
+                            src = await YTDLSource.from_query(url, bot.loop)
+                            await self.add(src)
+                        except Exception:
+                            continue
+            src = await self.queue.get()
+            self.current = src
+            # update presence
+            await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=src.title))
+            # announce
+            play_embed = make_embed(f"Now playing: **{src.title}**", discord.Color.gold(), thumb=src.thumbnail)
+            await embed_msg.edit(embed=play_embed)
+            await log_embed(f"Now playing: **{src.title}**", discord.Color.gold())
+            # TTS announcement
             try:
-                tts_text = f"Now playing: {self.current.title}"
-                tts_file = await speak_tts(tts_text)
-
-                # Wait for TTS to finish before playing song
-                tts_done = asyncio.Event()
-                def after_tts(e):
-                    ctx.bot.loop.call_soon_threadsafe(tts_done.set)
-                ctx.voice_client.play(discord.FFmpegPCMAudio(tts_file), after=after_tts)
-                await tts_done.wait()
-            except Exception as e:
-                print(f"[ERROR] Failed to TTS announce: {e}")
-
-            # ▶️ Play the actual song
+                tts = await speak_tts(f"Now playing: {src.title}")
+                done = asyncio.Event()
+                def after_tts(err): bot.loop.call_soon_threadsafe(done.set)
+                ctx.voice_client.play(discord.FFmpegPCMAudio(tts), after=after_tts)
+                await done.wait()
+            except Exception:
+                pass
+            # play track
+            done2 = asyncio.Event()
             ctx.voice_client.play(
-                self.current,
-                after=lambda e: ctx.bot.loop.call_soon_threadsafe(self.next.set)
+                discord.FFmpegPCMAudio(
+                    src.url,
+                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+                ),
+                after=lambda e: bot.loop.call_soon_threadsafe(done2.set)
             )
-
-            await self.next.wait()
+            await done2.wait()
 
 queue = MusicQueue()
 
-async def log_to_discord(bot, message: str):
-    log_channel_id = config.get("musicbot_log_channel")
-    if log_channel_id:
-        channel = bot.get_channel(log_channel_id)
-        if channel:
-            try:
-                await channel.send(message)
-            except Exception as e:
-                print(f"[ERROR] Failed to send log message: {e}")
-        else:
-            print("[ERROR] Logging channel not found.")
-    else:
-        print("[WARNING] No log channel configured in config.json")
-
-# Slash commands
-@bot.tree.command(name="play", description="Play a song from YouTube")
-@app_commands.describe(query="The song to search for or YouTube URL")
-async def slash_play(interaction: discord.Interaction, query: str):
-    await interaction.response.defer()
-    voice_client = interaction.guild.voice_client
-    if not voice_client:
-        if interaction.user.voice:
-            voice_client = await interaction.user.voice.channel.connect()
-        else:
-            return await interaction.followup.send("❌ You're not in a voice channel.")
-    await interaction.followup.send(f"🔎 Searching for: `{query}`")
+# Commands
+@bot.command(name="play")
+async def play(ctx, *, query: str):
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        return await ctx.send("❌ Join a voice channel first.")
+    vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
+    initial_embed = make_embed(f"🔎 Searching for: `{query}`")
+    message = await ctx.send(embed=initial_embed)
+    await log_embed(f"/play invoked by {ctx.author.display_name}: {query}")
     try:
-        player = await YTDLSource.create_source(query, loop=bot.loop)
-    except Exception as e:
-        print(f"[ERROR] Failed to find or play song: {e}")
-        await interaction.followup.send("❌ Failed to find or play the requested song.")
-        return
-    await queue.add(player)
-    await interaction.followup.send(f"✅ Added to queue: **{player.title}**")
-    if not voice_client.is_playing():
-        ctx = await commands.Context.from_interaction(interaction)
-        bot.loop.create_task(queue.player_loop(ctx))
+        src = await YTDLSource.from_query(query, bot.loop)
+    except Exception:
+        error_embed = make_embed("❌ Failed to find song.", discord.Color.red())
+        return await message.edit(embed=error_embed)
+    found_embed = make_embed(f"✅ Found: **{src.title}**", discord.Color.green(), thumb=src.thumbnail)
+    await message.edit(embed=found_embed)
+    await queue.add(src)
+    if not vc.is_playing():
+        # start player loop after bot is ready
+        bot.loop.create_task(queue.player_loop(ctx, message))
 
-    # Logging
-    await log_to_discord(bot, f"[{interaction.created_at:%Y-%m-%d %H:%M:%S}] `/play` command by **{interaction.user.display_name}** (`{interaction.user.id}`): `{query}`")
+@bot.command(name="pause")
+async def pause(ctx):
+    vc = ctx.guild.voice_client
+    if not vc or not vc.is_playing():
+        return await ctx.send("❌ Nothing playing.")
+    vc.pause()
+    await log_embed(f"Paused by {ctx.author.display_name}")
+    await ctx.send(embed=make_embed(f"⏸ Paused by {ctx.author.display_name}"))
 
-@bot.tree.command(name="pause", description="Pause the current music")
-async def slash_pause(interaction: discord.Interaction):
-    voice = interaction.guild.voice_client
-    if not voice or not voice.is_playing():
-        return await interaction.response.send_message("❌ Nothing is currently playing.", ephemeral=True)
-
-    voice.pause()
-    user = interaction.user.display_name
-    tts_message = f"Music paused by {user}."
-
-    try:
-        tts_file = await speak_tts(tts_message)
-        tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1)
-
-        tts_done = asyncio.Event()
-        def after_tts(e):
-            interaction.client.loop.call_soon_threadsafe(tts_done.set)
-
-        voice.play(tts_audio, after=after_tts)
-        await interaction.response.send_message(f"⏸ Paused music (requested by **{user}**).")
-        await tts_done.wait()
-    except Exception as e:
-        print(f"[ERROR] TTS failed: {e}")
-        await interaction.followup.send("❌ TTS announcement failed.")
-
-    # Logging
-    await log_to_discord(bot, f"[{interaction.created_at:%Y-%m-%d %H:%M:%S}] `/pause` command by **{interaction.user.display_name}** (`{interaction.user.id}`)")
-
-@bot.tree.command(name="skip", description="Skip the current song")
-async def slash_skip(interaction: discord.Interaction):
-    voice = interaction.guild.voice_client
-    if voice and voice.is_playing():
-        voice.stop()
-        await interaction.response.send_message("⏭ Skipped.")
+@bot.command(name="skip")
+async def skip(ctx):
+    vc = ctx.guild.voice_client
+    if vc and vc.is_playing():
+        vc.stop()
+        await log_embed(f"Skipped by {ctx.author.display_name}")
+        await ctx.send(embed=make_embed("⏭ Skipped."))
     else:
-        await interaction.response.send_message("Nothing is playing.")
+        await ctx.send("Nothing playing.")
 
-@bot.tree.command(name="queue", description="Show the current and upcoming songs")
-async def slash_queue(interaction: discord.Interaction):
-    if queue.current:
-        msg = f"**Now Playing**: {queue.current.title}\n"
-    else:
-        msg = "Nothing playing.\n"
-    if queue.queue.empty():
-        msg += "_Queue is empty._"
-        if queue.autoplay:
-            msg += "\n🔁 Autoplay is enabled"
-    else:
-        q = list(queue.queue._queue)
-        msg += "**Up Next:**\n" + "\n".join([f"- {track.title}" for track in q])
-    await interaction.response.send_message(msg)
-
-@bot.tree.command(name="stop", description="Disconnect the bot and clear the queue")
-async def slash_stop(interaction: discord.Interaction):
-    voice = interaction.guild.voice_client
-    if voice:
-        await log_to_discord(bot, f"🔌 Disconnected from {voice.channel.name} in {interaction.guild.name} by command from {interaction.user.display_name}")
-        voice.stop()
-        await voice.disconnect()
+@bot.command(name="stop")
+async def stop(ctx):
+    vc = ctx.guild.voice_client
+    if vc:
+        vc.stop()
+        await vc.disconnect()
         queue.queue = asyncio.Queue()
         queue.current = None
-        await interaction.response.send_message("Disconnected and cleared queue.")
+        await bot.change_presence(status=discord.Status.idle)
+        await log_embed(f"Stopped by {ctx.author.display_name}")
+        await ctx.send(embed=make_embed("Disconnected and cleared queue."))
     else:
-        await interaction.response.send_message("Not connected to a voice channel.")
+        await ctx.send("Not connected.")
 
-@bot.tree.command(name="autoplay", description="Toggle autoplay of recommended songs")
-async def slash_autoplay(interaction: discord.Interaction):
+@bot.command(name="autoplay")
+async def autoplay(ctx):
     queue.autoplay = not queue.autoplay
-    status = "✅ enabled" if queue.autoplay else "❌ disabled"
-    await interaction.response.send_message(f"Autoplay is now {status}")
+    state = "enabled" if queue.autoplay else "disabled"
+    await log_embed(f"Autoplay {state} by {ctx.author.display_name}")
+    await ctx.send(embed=make_embed(f"Autoplay is now {state}"))
 
-@bot.tree.command(name="tittiestts", description="Pause music, speak something with TTS, then resume")
-@app_commands.describe(text="What you want the bot to say out loud")
-async def slash_tittiestts(interaction: discord.Interaction, text: str):
-    await interaction.response.defer()
-    voice = interaction.guild.voice_client
-
-    if not voice:
-        if interaction.user.voice:
-            voice = await interaction.user.voice.channel.connect()
+@bot.command(name="tittiestts")
+async def tittiestts(ctx, *, text: str):
+    vc = ctx.guild.voice_client
+    if not vc:
+        if ctx.author.voice and ctx.author.voice.channel:
+            vc = await ctx.author.voice.channel.connect()
         else:
-            return await interaction.followup.send("❌ You're not in a voice channel.")
-
+            return await ctx.send("❌ Join a voice channel first.")
     if tts_lock.locked():
-        return await interaction.followup.send("⚠️ Another TTS command is currently running. Please wait and try again.", ephemeral=True)
-
+        return await ctx.send(embed=make_embed("⚠️ TTS busy.", discord.Color.orange()))
     async with tts_lock:
+        await ctx.send(embed=make_embed(f"🔊 Speaking: {text}"))
         try:
-            tts_file = await speak_tts(text)
-        except Exception as e:
-            print(f"[ERROR] TTS generation failed: {e}")
-            return await interaction.followup.send("❌ Failed to generate TTS audio.")
+            tts = await speak_tts(text)
+            done = asyncio.Event()
+            vc.play(discord.FFmpegPCMAudio(tts), after=lambda e: bot.loop.call_soon_threadsafe(done.set))
+            await done.wait()
+            await log_embed(f"TTS by {ctx.author.display_name}: {text}")
+        except Exception:
+            await ctx.send(embed=make_embed("❌ TTS failed.", discord.Color.red()))
 
-        was_playing = voice.is_playing()
-        current_source = voice.source if was_playing else None
+# Auto-disconnect helper
+def is_bot_alone(vc):
+    return vc and vc.channel and len([m for m in vc.channel.members if not m.bot]) == 0
 
-        if was_playing:
-            voice.pause()
-            await interaction.followup.send(f"⏸ Music paused by **{interaction.user.display_name}**. Speaking...")
-        else:
-            await interaction.followup.send("🔊 Speaking...")
-
-        try:
-            tts_done = asyncio.Event()
-
-            def after_tts(e):
-                interaction.client.loop.call_soon_threadsafe(tts_done.set)
-
-            tts_audio = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(tts_file), volume=1)
-            voice.play(tts_audio, after=after_tts)
-
-            await tts_done.wait()
-
-            if was_playing and current_source:
-                voice.play(current_source, after=lambda e: queue.next.set())
-                await interaction.followup.send("▶️ Resumed music.")
-            else:
-                await interaction.followup.send("✅ TTS finished.")
-        except Exception as e:
-            print(f"[ERROR] TTS playback failed: {e}")
-            await interaction.followup.send("❌ Failed to play TTS audio.")
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    # Ignore our own voice state changes
-    if member.id == bot.user.id:
-        return
-    
-    voice_client = member.guild.voice_client
-    if voice_client and voice_client.channel == before.channel:
-        if is_bot_alone(voice_client):
-            voice_client.alone_since = asyncio.get_event_loop().time()
-        elif hasattr(voice_client, 'alone_since'):
-            del voice_client.alone_since
-
-async def check_voice_channels():
+async def check_voice():
     await bot.wait_until_ready()
-    while not bot.is_closed():
-        for guild in bot.guilds:
-            voice_client = guild.voice_client
-            if voice_client and is_bot_alone(voice_client):
-                # If we're alone and not in the grace period yet, start tracking
-                if not hasattr(voice_client, 'alone_since'):
-                    voice_client.alone_since = asyncio.get_event_loop().time()
-                else:
-                    # Check if we've been alone for 5 minutes (300 seconds)
-                    alone_time = asyncio.get_event_loop().time() - voice_client.alone_since
-                    if alone_time >= 6:
-                        try:
-                            await log_to_discord(bot, f"🔌 Disconnected from {voice_client.channel.name} in {guild.name} after being alone for {alone_time} seconds.")
-                            await voice_client.disconnect()
-                            # Clear the queue
-                            queue.queue = asyncio.Queue()
-                            queue.current = None
-                        except Exception as e:
-                            print(f"Error disconnecting from voice: {e}")
-            elif voice_client and hasattr(voice_client, 'alone_since'):
-                # Someone joined - reset the timer
-                del voice_client.alone_since
-        
-        await asyncio.sleep(10)  # Check every 10 seconds
+    while True:
+        for g in bot.guilds:
+            vc = g.voice_client
+            if vc and is_bot_alone(vc):
+                if not hasattr(vc, 'alone_since'):
+                    vc.alone_since = int(asyncio.get_event_loop().time())
+                elif int(asyncio.get_event_loop().time()) - vc.alone_since >= 60:
+                    await log_embed(f"Disconnected after being alone for {int(asyncio.get_event_loop().time()) - vc.alone_since} seconds.", discord.Color.red())
+                    await vc.disconnect()
+                    queue.queue = asyncio.Queue()
+                    queue.current = None
+                    await bot.change_presence(status=discord.Status.idle)
+            elif vc and hasattr(vc, 'alone_since'):
+                del vc.alone_since
+        await asyncio.sleep(10)
 
 @bot.event
 async def on_ready():
+    bot.loop.create_task(check_voice())
     print(f"Logged in as {bot.user}")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands")
-    except Exception as e:
-        print(f"Error syncing commands: {e}")
-    bot.loop.create_task(check_voice_channels())
 
 bot.run(TOKEN)
