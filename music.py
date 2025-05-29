@@ -124,7 +124,7 @@ class MusicQueue:
                 tts = await speak_tts(f"Now playing: {src.title}")
                 done = asyncio.Event()
                 def after_tts(err): bot.loop.call_soon_threadsafe(done.set)
-                ctx.voice_client.play(discord.FFmpegPCMAudio(tts, options='-filter:a "volume=1.0"'), after=after_tts)
+                ctx.voice_client.play(discord.FFmpegPCMAudio(tts), after=after_tts)
                 await done.wait()
             except Exception:
                 pass
@@ -133,10 +133,8 @@ class MusicQueue:
             ctx.voice_client.play(
                 discord.FFmpegPCMAudio(
                     src.url,
-                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                    options='-filter:a "volume=0.3"'
-                )
-
+                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+                ),
                 after=lambda e: bot.loop.call_soon_threadsafe(done2.set)
             )
             await done2.wait()
@@ -148,7 +146,26 @@ queue = MusicQueue()
 async def play(ctx, *, query: str):
     if not ctx.author.voice or not ctx.author.voice.channel:
         return await ctx.send("❌ Join a voice channel first.")
+
+    initial_embed = make_embed(f"🔎 Searching for: `{query}`")
+    message = await ctx.send(embed=initial_embed)
+    await log_embed(f"/play invoked by {ctx.author.display_name}: {query}")
+
+    try:
+        src = await YTDLSource.from_query(query, bot.loop)
+        tts = await speak_tts(f"Now playing: {src.title}")
+    except Exception:
+        error_embed = make_embed("❌ Failed to find song or generate TTS.", discord.Color.red())
+        return await message.edit(embed=error_embed)
+
+    found_embed = make_embed(f"✅ Found: **{src.title}**", discord.Color.green(), thumb=src.thumbnail)
+    await message.edit(embed=found_embed)
+
     vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
+    await queue.add(src)
+
+    if not vc.is_playing():
+        bot.loop.create_task(queue.player_loop(ctx, message))
     initial_embed = make_embed(f"🔎 Searching for: `{query}`")
     message = await ctx.send(embed=initial_embed)
     await log_embed(f"/play invoked by {ctx.author.display_name}: {query}")
