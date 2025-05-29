@@ -246,8 +246,27 @@ async def check_voice():
         await asyncio.sleep(10)
 
 @bot.event
+async def on_voice_state_update(member, before, after):
+    if member.id != bot.user.id:
+        return
+
+    if before.channel != after.channel and after.channel:
+        vc = after.channel.guild.voice_client
+        if vc and vc.is_playing():
+            await asyncio.sleep(1)
+            try:
+                await vc.move_to(after.channel)
+            except Exception as e:
+                await log_embed(f"⚠️ Failed to move voice client: {e}", discord.Color.red())
+
+@bot.event
 async def on_ready():
     bot.loop.create_task(check_voice())
     print(f"Logged in as {bot.user}")
 
 bot.run(TOKEN)
+
+@bot.event
+async def on_command_error(ctx, error):
+    await log_embed(f"⚠️ Error in `{ctx.command}`: {str(error)}", discord.Color.red())
+    await ctx.send(embed=make_embed(f"❌ An error occurred: `{str(error)}`", discord.Color.red()))
