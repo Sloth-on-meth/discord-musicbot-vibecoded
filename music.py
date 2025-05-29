@@ -1,11 +1,10 @@
+
 import discord
 from discord.ext import commands
 import asyncio
 import yt_dlp
 import json
 import openai
-import os
-import uuid
 import re
 
 # Load config
@@ -64,28 +63,18 @@ def extract_vid_id(url):
     return m.group(1) if m else None
 
 class YTDLSource:
-    def __init__(self, data, filename):
+    def __init__(self, data):
         self.title = data.get("title")
-        self.url = data.get("webpage_url")
+        self.url = data.get("url")
         self.thumbnail = data.get("thumbnail")
         self.video_id = extract_vid_id(self.url)
-        self.filepath = filename  # Local downloaded file
 
     @classmethod
     async def from_query(cls, query, loop):
-        filename = f"downloads/{uuid.uuid4()}.mp3"
-        os.makedirs("downloads", exist_ok=True)
-
-        def download():
-            info = ytdl.extract_info(query, download=True)
-            path = ytdl.prepare_filename(info)
-            os.rename(path, filename)
-            return info, filename
-
-        data, filename = await loop.run_in_executor(None, download)
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
         if "entries" in data:
             data = data["entries"][0]
-        return cls(data, filename)
+        return cls(data)
 
     @classmethod
     async def get_recommendations(cls, vid_id, loop):
@@ -93,6 +82,7 @@ class YTDLSource:
         with yt_dlp.YoutubeDL(opts) as ytdl_r:
             data = await loop.run_in_executor(None, lambda: ytdl_r.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=False))
             return [f"https://www.youtube.com/watch?v={e['id']}" for e in data.get('entries', [])]
+
 # Queue
 class MusicQueue:
     def __init__(self):
@@ -143,7 +133,7 @@ class MusicQueue:
             done2 = asyncio.Event()
             ctx.voice_client.play(
                 discord.FFmpegPCMAudio(
-                    src.filepath,
+                    src.url,
                     before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
                 ),
                 after=lambda e: bot.loop.call_soon_threadsafe(done2.set)
@@ -164,8 +154,7 @@ async def play(ctx, *, query: str):
 
     try:
         src = await YTDLSource.from_query(query, bot.loop)
-        # Prefetch TTS (ensures it's cached/generated before join)
-        await speak_tts(f"Now playing: {src.title}")
+        tts = await speak_tts(f"Now playing: {src.title}")
     except Exception:
         error_embed = make_embed("❌ Failed to find song or generate TTS.", discord.Color.red())
         return await message.edit(embed=error_embed)
@@ -178,7 +167,20 @@ async def play(ctx, *, query: str):
 
     if not vc.is_playing():
         bot.loop.create_task(queue.player_loop(ctx, message))
-
+    initial_embed = make_embed(f"🔎 Searching for: `{query}`")
+    message = await ctx.send(embed=initial_embed)
+    await log_embed(f"/play invoked by {ctx.author.display_name}: {query}")
+    try:
+        src = await YTDLSource.from_query(query, bot.loop)
+    except Exception:
+        error_embed = make_embed("❌ Failed to find song.", discord.Color.red())
+        return await message.edit(embed=error_embed)
+    found_embed = make_embed(f"✅ Found: **{src.title}**", discord.Color.green(), thumb=src.thumbnail)
+    await message.edit(embed=found_embed)
+    await queue.add(src)
+    if not vc.is_playing():
+        # start player loop after bot is ready
+        bot.loop.create_task(queue.player_loop(ctx, message))
 
 @bot.command(name="pause")
 async def pause(ctx):
@@ -270,33 +272,12 @@ async def on_voice_state_update(member, before, after):
 
     if before.channel != after.channel and after.channel:
         vc = after.channel.guild.voice_client
-        if vc and queue.current:
+        if vc and vc.is_playing():
+            await asyncio.sleep(1)
             try:
-                # Pause and wait for state to settle
-                if vc.is_playing():
-                    vc.pause()
-                    await asyncio.sleep(1)
-
                 await vc.move_to(after.channel)
-                await asyncio.sleep(0.5)
-
-                # Restart the current track
-                done = asyncio.Event()
-                vc.play(
-                    discord.FFmpegPCMAudio(
-                        queue.current.url,
-                        before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                        options='-filter:a "volume=0.3"'
-                    ),
-                    after=lambda e: bot.loop.call_soon_threadsafe(done.set)
-                )
-                await log_embed("🎵 Restarted playback after move.")
-                await done.wait()
-
             except Exception as e:
-                await log_embed(f"⚠️ Error restarting playback after move: {e}", discord.Color.red())
-
-
+                await log_embed(f"⚠️ Failed to move voice client: {e}", discord.Color.red())
 
 @bot.event
 async def on_ready():
