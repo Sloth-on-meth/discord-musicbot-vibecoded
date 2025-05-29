@@ -124,7 +124,7 @@ class MusicQueue:
                 tts = await speak_tts(f"Now playing: {src.title}")
                 done = asyncio.Event()
                 def after_tts(err): bot.loop.call_soon_threadsafe(done.set)
-                ctx.voice_client.play(discord.FFmpegPCMAudio(tts), after=after_tts)
+                ctx.voice_client.play(discord.FFmpegPCMAudio(tts, options='-filter:a "volume=1.0"'), after=after_tts)
                 await done.wait()
             except Exception:
                 pass
@@ -133,8 +133,10 @@ class MusicQueue:
             ctx.voice_client.play(
                 discord.FFmpegPCMAudio(
                     src.url,
-                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-                ),
+                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                    options='-filter:a "volume=0.3"'
+                )
+
                 after=lambda e: bot.loop.call_soon_threadsafe(done2.set)
             )
             await done2.wait()
