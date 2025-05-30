@@ -150,7 +150,27 @@ class MusicPlayer:
             await message.edit(embed=make_embed(f"🎶 Now playing: **{track.title}**", discord.Color.gold(), thumb=track.thumbnail))
             await log_embed(f"▶️ Now playing: **{track.title}**", discord.Color.gold())
 
+            # Prefetch TTS
+            tts_text = f"Now playing: {track.title}"
+            tts_path = await generate_tts(tts_text)
+            if tts_path:
+                done = asyncio.Event()
+                def tts_done(_): bot.loop.call_soon_threadsafe(done.set)
+                try:
+                    vc.play(
+                        discord.PCMVolumeTransformer(
+                            discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
+                            volume=1.0
+                        ),
+                        after=tts_done
+                    )
+                    await done.wait()
+                except Exception as e:
+                    await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
+
+            # Play actual song
             done = asyncio.Event()
+            def song_done(_): bot.loop.call_soon_threadsafe(done.set)
             try:
                 vc.play(
                     discord.PCMVolumeTransformer(
@@ -161,7 +181,7 @@ class MusicPlayer:
                         ),
                         volume=0.3
                     ),
-                    after=lambda e: bot.loop.call_soon_threadsafe(done.set)
+                    after=song_done
                 )
                 self.start_time = time.time()
                 await done.wait()
@@ -176,7 +196,6 @@ async def play(ctx, *, query: str):
     if not ctx.author.voice:
         return await ctx.send("❌ Join a voice channel first.")
     msg = await ctx.send(embed=make_embed(f"🔍 Searching: `{query}`"))
-
     try:
         track = await AudioTrack.from_query(query)
         await music.add_to_queue(ctx.guild.id, track)
@@ -198,7 +217,6 @@ async def tts(ctx, *, text: str):
     if not music.start_time:
         return await ctx.send("⚠️ Cannot resume from timestamp, start_time missing.")
 
-    # Prefetch TTS before pausing music
     tts_path = await generate_tts(text)
     if not tts_path:
         return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
@@ -223,7 +241,6 @@ async def tts(ctx, *, text: str):
         except Exception as e:
             return await ctx.send(embed=make_embed(f"❌ Audio error: {e}", discord.Color.red()))
 
-    # Resume music
     try:
         music.start_time = time.time() - elapsed
         vc.play(
@@ -256,11 +273,9 @@ async def skip(ctx):
     if vc and vc.is_playing():
         vc.stop()
         await ctx.send("⏭ Skipped.")
-        # Restart the loop manually after stopping
         await music.start_loop(ctx, await ctx.send("⏳ Loading next track..."))
     else:
         await ctx.send("❌ Nothing is playing.")
-
 
 @bot.event
 async def on_ready():
