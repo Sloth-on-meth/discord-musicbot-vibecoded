@@ -1,9 +1,8 @@
 # Ignore everything
 *
 
-# Allow these specific files and directories
+# Allow only these files
 !music.py
 !README.md
 !.gitignore
-!downloads/
-!downloads/**
+
