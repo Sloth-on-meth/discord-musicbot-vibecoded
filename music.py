@@ -8,6 +8,7 @@ import re
 import time
 import sqlite3
 import os
+import random
 
 # Load config
 with open("config.json", "r") as f:
@@ -71,11 +72,8 @@ async def fetch_info(query: str):
     return await asyncio.to_thread(lambda: ytdl.extract_info(query, download=False))
 
 tts_lock = asyncio.Lock()
-import random
-
 TTS_VOICES = ["nova"]
-#TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-#fable is kut, nova is leuk, onyx is leuk
+
 async def generate_tts(text: str) -> str:
     path = "now.mp3"
     voice = random.choice(TTS_VOICES)
@@ -89,12 +87,11 @@ async def generate_tts(text: str) -> str:
         )
         with open(path, "wb") as f:
             f.write(resp.content)
-        await log_embed(f"🗣️ TTS voice used: {voice}")
+        await log_embed(f"\U0001f5e3️ TTS voice used: {voice}")
         return path
     except Exception as e:
         print(f"TTS error ({voice}): {e}")
         return None
-
 
 class AudioTrack:
     def __init__(self, title, url, thumbnail, video_id):
@@ -144,8 +141,33 @@ class MusicPlayer:
         while True:
             track = await self.pop_next(ctx.guild.id)
             if not track:
-                await ctx.send("✅ Queue finished.")
+                # Send text message
+                await ctx.send("✅ Queue empty. Disconnecting. Goodbye!")
+                
+                # Generate and play TTS
+                tts_text = "Queue empty. Disconnecting. Goodbye!"
+                tts_task = asyncio.create_task(generate_tts(tts_text))
+                
+                # Wait for TTS to be generated
+                tts_path = await tts_task
+                if tts_path:
+                    done = asyncio.Event()
+                    def tts_done(_): bot.loop.call_soon_threadsafe(done.set)
+                    try:
+                        vc.play(
+                            discord.PCMVolumeTransformer(
+                                discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
+                                volume=1.0
+                            ),
+                            after=tts_done
+                        )
+                        await done.wait()
+                    except Exception as e:
+                        await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
+                
                 self.playing = False
+                if ctx.guild.voice_client:
+                    await ctx.guild.voice_client.disconnect()
                 return
 
             self.current = track
@@ -158,9 +180,18 @@ class MusicPlayer:
             await message.edit(embed=make_embed(f"🎶 Now playing: **{track.title}**", discord.Color.gold(), thumb=track.thumbnail))
             await log_embed(f"▶️ Now playing: **{track.title}**", discord.Color.gold())
 
-            # Prefetch TTS
             tts_text = f"Now playing: {track.title}"
-            tts_path = await generate_tts(tts_text)
+            tts_task = asyncio.create_task(generate_tts(tts_text))
+            audio_stream = discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio(
+                    track.url,
+                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn',
+                    options='-loglevel panic'
+                ),
+                volume=0.3
+            )
+
+            tts_path = await tts_task
             if tts_path:
                 done = asyncio.Event()
                 def tts_done(_): bot.loop.call_soon_threadsafe(done.set)
@@ -176,21 +207,10 @@ class MusicPlayer:
                 except Exception as e:
                     await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
 
-            # Play actual song
             done = asyncio.Event()
             def song_done(_): bot.loop.call_soon_threadsafe(done.set)
             try:
-                vc.play(
-                    discord.PCMVolumeTransformer(
-                        discord.FFmpegPCMAudio(
-                            track.url,
-                            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn',
-                            options='-loglevel panic'
-                        ),
-                        volume=0.3
-                    ),
-                    after=song_done
-                )
+                vc.play(audio_stream, after=song_done)
                 self.start_time = time.time()
                 await done.wait()
             except Exception as e:
@@ -230,7 +250,6 @@ async def tts(ctx, *, text: str):
     async with tts_lock:
         await ctx.send(embed=make_embed(f"🔊 Speaking: {text}"))
 
-        # Start both TTS and resumed music prefetching in parallel
         tts_task = asyncio.create_task(generate_tts(text))
         resumed_audio = discord.PCMVolumeTransformer(
             discord.FFmpegPCMAudio(
@@ -241,12 +260,10 @@ async def tts(ctx, *, text: str):
             volume=0.3
         )
 
-        # Wait for TTS to finish generating
         tts_path = await tts_task
         if not tts_path:
             return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
 
-        # Now pause and play TTS
         vc.pause()
         await asyncio.sleep(0.1)
         tts_done = asyncio.Event()
@@ -265,7 +282,6 @@ async def tts(ctx, *, text: str):
         except Exception as e:
             return await ctx.send(embed=make_embed(f"❌ Audio error: {e}", discord.Color.red()))
 
-        # Resume music immediately
         try:
             music.start_time = time.time() - elapsed
             vc.play(resumed_audio)
