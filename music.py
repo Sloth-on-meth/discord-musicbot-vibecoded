@@ -47,7 +47,6 @@ CREATE TABLE queue (
     video_id TEXT
 )
 """)
-cursor.execute("DELETE FROM queue")
 conn.commit()
 
 # Helpers
@@ -130,7 +129,8 @@ class MusicPlayer:
 
     async def start_loop(self, ctx, message):
         if self.loop_task and not self.loop_task.done():
-            self.loop_task = asyncio.create_task(self.player_loop(ctx, message))
+            return
+        self.loop_task = asyncio.create_task(self.player_loop(ctx, message))
 
     async def player_loop(self, ctx, message):
         while True:
@@ -142,26 +142,9 @@ class MusicPlayer:
 
             self.current = track
             self.playing = True
-
-            if not ctx.author.voice or not ctx.author.voice.channel:
-                await ctx.send("❌ You must be in a voice channel.")
-                return
-
             vc = ctx.guild.voice_client
             if not vc or not vc.is_connected():
                 vc = await ctx.author.voice.channel.connect()
-
-            tts_path = await generate_tts(f"Now playing: {track.title}")
-            if tts_path:
-                done = asyncio.Event()
-                vc.play(
-                    discord.PCMVolumeTransformer(
-                        discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
-                        volume=1.0
-                    ),
-                    after=lambda e: bot.loop.call_soon_threadsafe(done.set)
-                )
-                await done.wait()
 
             await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=track.title))
             await message.edit(embed=make_embed(f"🎶 Now playing: **{track.title}**", discord.Color.gold(), thumb=track.thumbnail))
@@ -203,6 +186,61 @@ async def play(ctx, *, query: str):
     except Exception as e:
         await msg.edit(embed=make_embed(f"❌ Error: {e}", discord.Color.red()))
 
+@bot.command(name="tittiestts")
+async def tts(ctx, *, text: str):
+    if len(text) > 250:
+        return await ctx.send("⚠️ Max 250 characters.")
+    if tts_lock.locked():
+        return await ctx.send("🔄 TTS is busy.")
+    vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
+    if not music.current or not vc.is_playing():
+        return await ctx.send("❌ Nothing currently playing to resume after TTS.")
+    if not music.start_time:
+        return await ctx.send("⚠️ Cannot resume from timestamp, start_time missing.")
+
+    # Prefetch TTS before pausing music
+    tts_path = await generate_tts(text)
+    if not tts_path:
+        return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
+
+    vc.pause()
+    await asyncio.sleep(0.1)
+    elapsed = max(0, int(time.time() - music.start_time))
+
+    async with tts_lock:
+        await ctx.send(embed=make_embed(f"🔊 Speaking: {text}"))
+        done = asyncio.Event()
+        def after_play(_): bot.loop.call_soon_threadsafe(done.set)
+        try:
+            vc.play(
+                discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
+                    volume=1.0
+                ),
+                after=after_play
+            )
+            await done.wait()
+        except Exception as e:
+            return await ctx.send(embed=make_embed(f"❌ Audio error: {e}", discord.Color.red()))
+
+    # Resume music
+    try:
+        music.start_time = time.time() - elapsed
+        vc.play(
+            discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio(
+                    music.current.url,
+                    before_options=f"-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn",
+                    options='-loglevel panic'
+                ),
+                volume=0.3
+            )
+        )
+        await ctx.send(embed=make_embed(f"🎵 Resumed at {elapsed}s"))
+    except Exception as e:
+        await ctx.send(embed=make_embed(f"⚠️ Failed to resume: {e}", discord.Color.red()))
+    await log_embed(f"TTS by {ctx.author.display_name}: {text} (resumed at {elapsed}s)")
+
 @bot.command(name="showqueue")
 async def showqueue(ctx):
     queue = await music.show_queue(ctx.guild.id)
@@ -218,21 +256,11 @@ async def skip(ctx):
     if vc and vc.is_playing():
         vc.stop()
         await ctx.send("⏭ Skipped.")
+        # Restart the loop manually after stopping
         await music.start_loop(ctx, await ctx.send("⏳ Loading next track..."))
     else:
         await ctx.send("❌ Nothing is playing.")
 
-@bot.command(name="stop")
-async def stop(ctx):
-    vc = ctx.guild.voice_client
-    if vc:
-        vc.stop()
-        await vc.disconnect()
-        music.playing = False
-        music.loop_task = None
-        await ctx.send("⏹️ Stopped and disconnected.")
-    else:
-        await ctx.send("❌ Not connected to a voice channel.")
 
 @bot.event
 async def on_ready():
