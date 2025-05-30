@@ -71,13 +71,18 @@ async def fetch_info(query: str):
     return await asyncio.to_thread(lambda: ytdl.extract_info(query, download=False))
 
 tts_lock = asyncio.Lock()
+import random
+
+TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+
 async def generate_tts(text: str) -> str:
     path = "now.mp3"
+    voice = random.choice(TTS_VOICES)
     try:
         resp = await asyncio.to_thread(
             client.audio.speech.create,
             model="tts-1",
-            voice="alloy",
+            voice=voice,
             input=text,
             response_format="mp3"
         )
@@ -85,7 +90,7 @@ async def generate_tts(text: str) -> str:
             f.write(resp.content)
         return path
     except Exception as e:
-        print(f"TTS error: {e}")
+        print(f"TTS error ({voice}): {e}")
         return None
 
 class AudioTrack:
@@ -207,8 +212,8 @@ async def play(ctx, *, query: str):
 
 @bot.command(name="tittiestts")
 async def tts(ctx, *, text: str):
-    if len(text) > 250:
-        return await ctx.send("⚠️ Max 250 characters.")
+    if len(text) > 1000:
+        return await ctx.send("⚠️ Max 1000 characters.")
     if tts_lock.locked():
         return await ctx.send("🔄 TTS is busy.")
     vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
@@ -276,7 +281,7 @@ async def skip(ctx):
         await music.start_loop(ctx, await ctx.send("⏳ Loading next track..."))
     else:
         await ctx.send("❌ Nothing is playing.")
-        
+
 @bot.command(name="stop")
 async def stop(ctx):
     vc = ctx.guild.voice_client
