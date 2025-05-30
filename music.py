@@ -75,6 +75,7 @@ import random
 
 TTS_VOICES = ["nova"]
 #TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+#fable is kut, nova is leuk, onyx is leuk
 async def generate_tts(text: str) -> str:
     path = "now.mp3"
     voice = random.choice(TTS_VOICES)
