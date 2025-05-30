@@ -7,14 +7,13 @@ import openai
 import re
 import time
 
-# Load config
 with open("config.json", "r") as f:
     config = json.load(f)
 
 required_keys = ["token", "openai_api_key"]
 for key in required_keys:
     if key not in config:
-        raise KeyError(f"Missing config key: '{key}'")
+        raise KeyError(f"Missing required config key: '{key}'")
 
 TOKEN = config["token"]
 log_channel_id = config.get("musicbot_log_channel")
@@ -34,7 +33,6 @@ intents.message_content = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Utils
 def make_embed(desc, color=discord.Color.blurple(), thumb=None):
     embed = discord.Embed(description=desc, color=color, timestamp=discord.utils.utcnow())
     if thumb:
@@ -48,7 +46,6 @@ async def log_embed(msg, color=discord.Color.blurple()):
     if channel:
         await channel.send(embed=make_embed(msg, color))
 
-# Async TTS
 tts_lock = asyncio.Lock()
 async def generate_tts(text: str) -> str:
     path = "now.mp3"
@@ -67,16 +64,13 @@ async def generate_tts(text: str) -> str:
         print(f"TTS error: {e}")
         return None
 
-# Video lookup
 async def fetch_info(query: str):
     return await asyncio.to_thread(lambda: ytdl.extract_info(query, download=False))
 
-# Extract ID
 def extract_vid_id(url):
     m = re.search(r"(?:youtube\.com/.+v=|youtu\.be/)([^&?]{11})", url)
     return m.group(1) if m else None
 
-# Audio source wrapper
 class AudioTrack:
     def __init__(self, data):
         self.title = data["title"]
@@ -91,7 +85,6 @@ class AudioTrack:
             data = data["entries"][0]
         return cls(data)
 
-# Music Queue
 class MusicPlayer:
     def __init__(self):
         self.queue = asyncio.Queue()
@@ -100,6 +93,7 @@ class MusicPlayer:
         self.loop_task = None
         self.autoplay = True
         self.last_video_id = None
+        self.start_time = None
 
     async def add(self, track):
         await self.queue.put(track)
@@ -120,57 +114,43 @@ class MusicPlayer:
                 await ctx.guild.voice_client.disconnect()
                 self.playing = False
                 return
-    
+
             self.current = track
             self.playing = True
-    
             vc = ctx.guild.voice_client
             if not vc or not vc.is_connected():
-                try:
-                    vc = await ctx.author.voice.channel.connect()
-                except Exception as e:
-                    await log_embed(f"❌ Failed to connect: {e}", discord.Color.red())
-                    continue
-                
+                vc = await ctx.author.voice.channel.connect()
+
             await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=track.title))
             embed = make_embed(f"🎶 Now playing: **{track.title}**", discord.Color.gold(), thumb=track.thumbnail)
             await message.edit(embed=embed)
             await log_embed(f"▶️ Now playing: **{track.title}**", discord.Color.gold())
-    
+
             done = asyncio.Event()
-    
             try:
                 vc.play(
-                    discord.FFmpegPCMAudio(
-                        track.url,
-                        before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+                    discord.PCMVolumeTransformer(
+                        discord.FFmpegPCMAudio(
+                            track.url,
+                            before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn',
+                            options='-loglevel panic'
+                        ),
+                        volume=0.3  # hardcoded music volume
                     ),
                     after=lambda e: bot.loop.call_soon_threadsafe(done.set)
                 )
-    
-                # Set the timestamp tracking for resuming later
                 self.start_time = time.time()
-    
                 await done.wait()
             except Exception as e:
                 await log_embed(f"⚠️ Playback failed: {e}", discord.Color.red())
                 continue
-    async def announce_tts(self, title, vc):
-        async with tts_lock:
-            tts_path = await generate_tts(f"Now playing: {title}")
-            if tts_path:
-                done = asyncio.Event()
-                vc.play(discord.FFmpegPCMAudio(tts_path), after=lambda e: bot.loop.call_soon_threadsafe(done.set))
-                await done.wait()
 
 music = MusicPlayer()
 
-# Commands
 @bot.command(name="play")
 async def play(ctx, *, query: str):
     if not ctx.author.voice:
         return await ctx.send("❌ Join a voice channel first.")
-
     msg = await ctx.send(embed=make_embed(f"🔍 Searching: `{query}`"))
     await log_embed(f"/play invoked by {ctx.author.display_name}: {query}")
 
@@ -182,12 +162,17 @@ async def play(ctx, *, query: str):
 
     vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
 
-    # Play TTS first if VC is idle
     if not vc.is_playing() and tts_path:
         done = asyncio.Event()
         def after_play(_): bot.loop.call_soon_threadsafe(done.set)
         try:
-            vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
+            vc.play(
+                discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
+                    volume=1.0  # hardcoded TTS volume
+                ),
+                after=after_play
+            )
             await done.wait()
         except Exception as e:
             await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
@@ -196,6 +181,60 @@ async def play(ctx, *, query: str):
     await msg.edit(embed=make_embed(f"✅ Found: **{track.title}**", discord.Color.green(), thumb=track.thumbnail))
     await music.start_loop(ctx, msg)
 
+@bot.command(name="tittiestts")
+async def tts(ctx, *, text: str):
+    if len(text) > 250:
+        return await ctx.send("⚠️ Max 250 characters.")
+    if tts_lock.locked():
+        return await ctx.send("🔄 TTS is busy.")
+    vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
+    if not music.current or not vc.is_playing():
+        return await ctx.send("❌ Nothing currently playing to resume after TTS.")
+    if not music.start_time:
+        return await ctx.send("⚠️ Cannot resume from timestamp, start_time missing.")
+
+    # Prefetch TTS before pausing music
+    tts_path = await generate_tts(text)
+    if not tts_path:
+        return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
+
+    vc.pause()
+    await asyncio.sleep(0.1)
+    elapsed = max(0, int(time.time() - music.start_time))
+
+    async with tts_lock:
+        await ctx.send(embed=make_embed(f"🔊 Speaking: {text}"))
+        done = asyncio.Event()
+        def after_play(_): bot.loop.call_soon_threadsafe(done.set)
+        try:
+            vc.play(
+                discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
+                    volume=1.0
+                ),
+                after=after_play
+            )
+            await done.wait()
+        except Exception as e:
+            return await ctx.send(embed=make_embed(f"❌ Audio error: {e}", discord.Color.red()))
+
+    # Resume music from paused timestamp
+    try:
+        music.start_time = time.time() - elapsed
+        vc.play(
+            discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio(
+                    music.current.url,
+                    before_options=f"-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn",
+                    options='-loglevel panic'
+                ),
+                volume=0.3
+            )
+        )
+        await ctx.send(embed=make_embed(f"🎵 Resumed at {elapsed}s"))
+    except Exception as e:
+        await ctx.send(embed=make_embed(f"⚠️ Failed to resume: {e}", discord.Color.red()))
+    await log_embed(f"TTS by {ctx.author.display_name}: {text} (resumed at {elapsed}s)")
 
 
 @bot.command(name="skip")
@@ -232,64 +271,6 @@ async def stop(ctx):
 async def autoplay(ctx):
     music.autoplay = not music.autoplay
     await ctx.send(f"Autoplay is now {'enabled' if music.autoplay else 'disabled'}.")
-
-@bot.command(name="tittiestts")
-async def tts(ctx, *, text: str):
-    if len(text) > 250:
-        return await ctx.send("⚠️ Max 250 characters.")
-    if tts_lock.locked():
-        return await ctx.send("🔄 TTS is busy.")
-
-    vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
-
-    if not music.current or not vc.is_playing():
-        return await ctx.send("❌ Nothing currently playing to resume after TTS.")
-
-    # 1. Pause and record timestamp
-    vc.pause()
-    await asyncio.sleep(0.1)
-    start_time = getattr(music, "start_time", None)
-    if not start_time:
-        return await ctx.send("⚠️ Cannot track timestamp; missing start_time.")
-    
-    elapsed = time.time() - start_time
-    elapsed = max(0, int(elapsed))  # in seconds
-
-    # 2. Generate TTS
-    tts_path = await generate_tts(text)
-    if not tts_path:
-        return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
-
-    async with tts_lock:
-        await ctx.send(embed=make_embed(f"🔊 Speaking: {text}"))
-
-        done = asyncio.Event()
-        def after_play(_): bot.loop.call_soon_threadsafe(done.set)
-
-        try:
-            vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
-            await done.wait()
-        except discord.ClientException as e:
-            return await ctx.send(embed=make_embed(f"❌ Audio error: {e}", discord.Color.red()))
-
-    # 3. Resume music from timestamp
-    current = music.current
-    try:
-        music.start_time = time.time() - elapsed  # adjust for new stream
-        done2 = asyncio.Event()
-        vc.play(
-            discord.FFmpegPCMAudio(
-                current.url,
-                before_options=f"-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-            ),
-            after=lambda e: bot.loop.call_soon_threadsafe(done2.set)
-        )
-        await ctx.send(embed=make_embed(f"🎵 Resumed at {elapsed}s"))
-    except Exception as e:
-        await ctx.send(embed=make_embed(f"⚠️ Failed to resume: {e}", discord.Color.red()))
-
-    await log_embed(f"TTS by {ctx.author.display_name}: {text} (resumed at {elapsed}s)")
-
 
 @bot.event
 async def on_ready():
