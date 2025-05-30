@@ -1,72 +1,66 @@
+# Discord Music Bot
+# FULLY VIBECODED. NOT A SINGLE CHAR HANDTYPED!
 
-Discord Music Bot
+A feature-rich Discord music bot built with discord.py, yt-dlp, and OpenAI that allows users to play music from YouTube, manage queues, and hear song announcements via Text-to-Speech.
 
-A feature-rich Discord music bot built with discord.py, yt-dlp, and openai that allows users to play music from YouTube, manage queues, get autoplay recommendations, and hear fun facts via Text-to-Speech.
-
-Features
+## Features
 
 - **YouTube Playback**: Play songs directly from YouTube using search queries or URLs.
 - **Music Queue**: Manage upcoming songs in a queue.
 - **Skip**: Skip the currently playing song.
 - **Stop**: Disconnect the bot from the voice channel and clear the queue.
-- **Autoplay Recommendations**: Automatically add recommended songs to the queue when it's empty (toggleable).
-- **TTS Announcements**: Announces the currently playing song and a random fun fact using OpenAI's Text-to-Speech.
+- **TTS Announcements**: Announces the currently playing song using OpenAI's Text-to-Speech before each track.
+- **TTS Interruptions**: Inject custom TTS messages during playback and resume at the correct timestamp.
 
-Setup
+## Setup
 
 To set up and run this bot, follow these steps:
 
-**Prerequisites**:
+### Prerequisites
 
-- **Python**: Ensure you have Python 3.8 or higher installed. You can download it from python.org.
-- **FFmpeg**: Install ffmpeg and make sure it's accessible in your system's PATH. You can find download instructions for your operating system on the ffmpeg website.
+- **Python**: Python 3.8 or higher. [Download Python](https://www.python.org/downloads/)
+- **FFmpeg**: Install ffmpeg and ensure it is accessible in your system's PATH. [Download FFmpeg](https://ffmpeg.org/download.html)
 
-**Install Dependencies**:
+### Install Dependencies
 
-Save the provided code as a Python file (e.g., `bot.py`). Open your terminal or command prompt, navigate to the directory where you saved the file, and run the following command to install the required libraries:
+Save the bot code as `bot.py` and run:
 
 ```bash
 pip install discord.py yt-dlp openai PyNaCl
 ```
 
-`PyNaCl` is necessary for voice functionality in `discord.py`.
+### Configuration
 
-**Create config.json**:
-
-In the same directory as your bot script, create a file named `config.json`. This file will store your sensitive keys. Add the following structure to the file, replacing the placeholder values with your actual keys:
+Create a `config.json` file in the same directory as your bot script with the following content:
 
 ```json
 {
   "token": "YOUR_DISCORD_BOT_TOKEN",
-  "openai_api_key": "YOUR_OPENAI_API_KEY"
+  "openai_api_key": "YOUR_OPENAI_API_KEY",
+  "musicbot_log_channel": YOUR_LOG_CHANNEL_ID
 }
 ```
 
-- **Discord Bot Token**: Obtain your bot token from the Discord Developer Portal. Create a new application, go to the "Bot" tab, and reveal the token. Keep this token secret!
-- **OpenAI API Key**: Get your API key from the OpenAI API website. You'll need an OpenAI account. Keep this key secret!
+- Replace values with your actual Discord Bot token, OpenAI API key, and the numeric channel ID where logs should be sent.
 
-**Run the Bot**:
-
-After installing dependencies and creating the `config.json` file, you can run the bot using your terminal:
+### Running the Bot
 
 ```bash
 python bot.py
 ```
 
-The bot should come online in your Discord server. Check the terminal output for confirmation (e.g., "Logged in as YourBotName").
+The bot will come online and respond to commands in your Discord server.
 
-Usage
+## Commands
 
-The bot uses Discord slash commands. Type `/` in your Discord server's chat and select your bot to see the available commands.
+- `!play [query]` — Play a song from YouTube via search or URL.
+- `!skip` — Skip the current song.
+- `!stop` — Stop playback and disconnect the bot.
+- `!showqueue` — Display the current queue.
+- `!tittiestts [text]` — Interrupt playback with a TTS message and resume from where it left off.
 
-- `/play [query]`: Use this command to play a song. You can paste a YouTube video URL or type a search query (e.g., `/play never gonna give you up` or `/play https://www.youtube.com/watch?v=dQw4w9WgXcQ`).
-- `/skip`: Skips the song currently being played and moves to the next one in the queue.
-- `/queue`: Displays the current song and lists the songs that are waiting in the queue.
-- `/stop`: Disconnects the bot from the voice channel it's currently in and clears the entire music queue.
-- `/autoplay`: Toggles the autoplay feature. When enabled, the bot will fetch and add recommended songs to the queue automatically once the current queue is empty, based on the last played song.
+## Notes
 
-Notes
-
-- Ensure the bot has the necessary permissions to join voice channels, speak, and send messages in the channels you intend to use it in.
-- The quality of recommendations and facts depends on the respective APIs (YouTube and OpenAI).
-```
+- Ensure the bot has permissions to connect and speak in voice channels.
+- You must be in a voice channel to use `!play`, `!tittiestts`, or `!stop`.
+- TTS playback uses OpenAI's `tts-1` model and `alloy` voice.
