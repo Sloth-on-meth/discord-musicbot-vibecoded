@@ -73,8 +73,8 @@ async def fetch_info(query: str):
 tts_lock = asyncio.Lock()
 import random
 
-TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-
+TTS_VOICES = ["nova"]
+#TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
 async def generate_tts(text: str) -> str:
     path = "now.mp3"
     voice = random.choice(TTS_VOICES)
@@ -88,10 +88,12 @@ async def generate_tts(text: str) -> str:
         )
         with open(path, "wb") as f:
             f.write(resp.content)
+        await log_embed(f"🗣️ TTS voice used: {voice}")
         return path
     except Exception as e:
         print(f"TTS error ({voice}): {e}")
         return None
+
 
 class AudioTrack:
     def __init__(self, title, url, thumbnail, video_id):
