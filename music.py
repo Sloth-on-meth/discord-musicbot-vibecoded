@@ -276,6 +276,18 @@ async def skip(ctx):
         await music.start_loop(ctx, await ctx.send("⏳ Loading next track..."))
     else:
         await ctx.send("❌ Nothing is playing.")
+        
+@bot.command(name="stop")
+async def stop(ctx):
+    vc = ctx.guild.voice_client
+    if vc and vc.is_connected():
+        await vc.disconnect(force=True)
+    music.current = None
+    music.playing = False
+    music.start_time = None
+    if music.loop_task and not music.loop_task.done():
+        music.loop_task.cancel()
+    await ctx.send("🛑 Stopped and disconnected.")
 
 @bot.event
 async def on_ready():
