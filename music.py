@@ -225,46 +225,55 @@ async def tts(ctx, *, text: str):
     if not music.start_time:
         return await ctx.send("⚠️ Cannot resume from timestamp, start_time missing.")
 
-    tts_path = await generate_tts(text)
-    if not tts_path:
-        return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
-
-    vc.pause()
-    await asyncio.sleep(0.1)
     elapsed = max(0, int(time.time() - music.start_time))
 
     async with tts_lock:
         await ctx.send(embed=make_embed(f"🔊 Speaking: {text}"))
-        done = asyncio.Event()
-        def after_play(_): bot.loop.call_soon_threadsafe(done.set)
+
+        # Start both TTS and resumed music prefetching in parallel
+        tts_task = asyncio.create_task(generate_tts(text))
+        resumed_audio = discord.PCMVolumeTransformer(
+            discord.FFmpegPCMAudio(
+                music.current.url,
+                before_options=f"-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn",
+                options='-loglevel panic'
+            ),
+            volume=0.3
+        )
+
+        # Wait for TTS to finish generating
+        tts_path = await tts_task
+        if not tts_path:
+            return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
+
+        # Now pause and play TTS
+        vc.pause()
+        await asyncio.sleep(0.1)
+        tts_done = asyncio.Event()
+
+        def after_tts(_): bot.loop.call_soon_threadsafe(tts_done.set)
+
         try:
             vc.play(
                 discord.PCMVolumeTransformer(
                     discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
                     volume=1.0
                 ),
-                after=after_play
+                after=after_tts
             )
-            await done.wait()
+            await tts_done.wait()
         except Exception as e:
             return await ctx.send(embed=make_embed(f"❌ Audio error: {e}", discord.Color.red()))
 
-    try:
-        music.start_time = time.time() - elapsed
-        vc.play(
-            discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(
-                    music.current.url,
-                    before_options=f"-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn",
-                    options='-loglevel panic'
-                ),
-                volume=0.3
-            )
-        )
-        await ctx.send(embed=make_embed(f"🎵 Resumed at {elapsed}s"))
-    except Exception as e:
-        await ctx.send(embed=make_embed(f"⚠️ Failed to resume: {e}", discord.Color.red()))
-    await log_embed(f"TTS by {ctx.author.display_name}: {text} (resumed at {elapsed}s)")
+        # Resume music immediately
+        try:
+            music.start_time = time.time() - elapsed
+            vc.play(resumed_audio)
+            await ctx.send(embed=make_embed(f"🎵 Resumed at {elapsed}s"))
+        except Exception as e:
+            await ctx.send(embed=make_embed(f"⚠️ Failed to resume: {e}", discord.Color.red()))
+
+        await log_embed(f"TTS by {ctx.author.display_name}: {text} (resumed at {elapsed}s)")
 
 @bot.command(name="showqueue")
 async def showqueue(ctx):
