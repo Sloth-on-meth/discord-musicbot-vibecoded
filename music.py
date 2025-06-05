@@ -92,6 +92,31 @@ async def get_user_voice(user_id):
     row = cursor.fetchone()
     return row[0] if row else "nova"
 
+@bot.command(name="ttsvoice", help="Set or show your TTS voice. Usage: !ttsvoice <voice>")
+async def ttsvoice(ctx, *, voice: str = None):
+    """Set or show your TTS voice. Usage: !ttsvoice <voice>"""
+    if voice is None:
+        user_voice = await get_user_voice(ctx.author.id)
+        available = ', '.join(TTS_VOICES)
+        embed = make_embed(
+            f"Your current TTS voice: **{user_voice}**\n\n**Available voices:**\n{available}",
+            discord.Color.blurple(),
+            title="TTS Voice Selection"
+        )
+        await ctx.send(embed=embed)
+        return
+    voice = voice.lower()
+    if voice not in TTS_VOICES:
+        embed = make_embed(
+            f"❌ Invalid voice.\n**Available voices:**\n{', '.join(TTS_VOICES)}",
+            discord.Color.red(),
+            title="TTS Voice Error"
+        )
+        await ctx.send(embed=embed)
+        return
+    await set_user_voice(ctx.author.id, voice)
+    await ctx.send(embed=make_embed(f"✅ Your TTS voice has been set to **{voice}**.", discord.Color.green(), title="TTS Voice Updated"))
+
 async def set_user_voice(user_id, voice):
     cursor.execute("INSERT INTO user_voice (user_id, voice) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET voice=excluded.voice", (user_id, voice))
     conn.commit()
