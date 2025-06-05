@@ -10,7 +10,10 @@ A feature-rich Discord music bot built with discord.py, yt-dlp, and OpenAI that 
 - **Skip**: Skip the currently playing song.
 - **Stop**: Disconnect the bot from the voice channel and clear the queue.
 - **TTS Announcements**: Announces the currently playing song using OpenAI's Text-to-Speech before each track.
-- **TTS Interruptions**: Inject custom TTS messages during playback and resume at the correct timestamp.
+- **TTS Interruptions**: Inject custom TTS messages at any time, even if no music is playing.
+- **Per-User TTS Voices**: Every user can choose their own OpenAI TTS voice with `!ttsvoice` and it will be remembered for all their TTS.
+- **Pretty Embeds**: All bot responses use beautiful, modern Discord embeds for clarity and style.
+- **Command List & Help**: Use `!commands` for a quick list, or `!help` for a detailed overview of all features.
 
 ## Setup
 
@@ -57,10 +60,18 @@ The bot will come online and respond to commands in your Discord server.
 - `!skip` — Skip the current song.
 - `!stop` — Stop playback and disconnect the bot.
 - `!showqueue` — Display the current queue.
-- `!tittiestts [text]` — Interrupt playback with a TTS message and resume from where it left off.
+- `!tts [text]` — Speak a message in your chosen TTS voice in the voice channel (works any time, even if no music is playing).
+- `!ttsvoice [voice]` — Set or show your personal TTS voice. Use without arguments to see your current voice and all available options.
+- `!commands` — Show a pretty embed with all available commands and summaries.
+- `!help` — Show a beautiful embed with detailed explanations of all bot features and usage.
+
+## Per-User TTS Voices
+
+Every user can select their own OpenAI TTS voice using `!ttsvoice <voice>`. The bot will remember your choice for all future TTS. To see your current voice and all available voices, just use `!ttsvoice` with no arguments.
 
 ## Notes
 
 - Ensure the bot has permissions to connect and speak in voice channels.
-- You must be in a voice channel to use `!play`, `!tittiestts`, or `!stop`.
-- TTS playback uses OpenAI's `tts-1` model and `alloy` voice.
+- You must be in a voice channel to use music or TTS commands.
+- TTS playback uses OpenAI's `tts-1` model and supports all available voices.
+- All responses use beautiful, modern Discord embeds for a better experience.
