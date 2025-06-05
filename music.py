@@ -34,12 +34,10 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Setup DB (reset each run)
-if os.path.exists("queue.db"):
-    os.remove("queue.db")
 conn = sqlite3.connect("queue.db")
 cursor = conn.cursor()
 cursor.execute("""
-CREATE TABLE queue (
+CREATE TABLE IF NOT EXISTS queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER,
     title TEXT,
@@ -371,11 +369,29 @@ async def tts(ctx, *, text: str):
                     await ctx.send(embed=make_embed('⚠️ Failed to join voice channel.', discord.Color.red(), title="TTS Error"))
                     await log_embed('⚠️ Failed to join voice channel.', discord.Color.red())
                     return
+
+        # Prefetch TTS audio before pausing
         tts_path = await generate_tts(text, user_id=ctx.author.id)
         if not tts_path:
             await ctx.send(embed=make_embed("⚠️ TTS generation failed.", discord.Color.red(), title="TTS Error"))
             await log_embed("⚠️ TTS generation failed.", discord.Color.red())
             return
+
+        # If music is playing, pause it, play TTS, then resume
+        was_playing = False
+        current_track = None
+        resume_seek = None
+        if vc.is_playing():
+            was_playing = True
+            # Get the current track and elapsed time for resuming
+            current_track = music.current if hasattr(music, 'current') else None
+            if current_track and hasattr(music, 'start_time') and music.start_time:
+                resume_seek = time.time() - music.start_time
+            else:
+                resume_seek = None
+            vc.pause()
+            await asyncio.sleep(0.2)  # Give a small buffer for pause
+
         done = asyncio.Event()
         def tts_done(_): bot.loop.call_soon_threadsafe(done.set)
         try:
@@ -387,6 +403,28 @@ async def tts(ctx, *, text: str):
                 after=tts_done
             )
             await done.wait()
+            if was_playing and current_track and resume_seek is not None:
+                try:
+                    # Stop any paused playback
+                    if vc.is_playing() or vc.is_paused():
+                        vc.stop()
+                    # Re-create the audio stream with seek
+                    audio_stream = discord.PCMVolumeTransformer(
+                        discord.FFmpegPCMAudio(
+                            current_track.url,
+                            before_options=f'-ss {int(resume_seek)} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn',
+                            options='-loglevel panic'
+                        ),
+                        volume=0.3
+                    )
+                    done_resume = asyncio.Event()
+                    def song_resume_done(_): bot.loop.call_soon_threadsafe(done_resume.set)
+                    vc.play(audio_stream, after=song_resume_done)
+                    # Update music.start_time
+                    music.start_time = time.time() - (resume_seek if resume_seek else 0)
+                except Exception as e:
+                    await ctx.send(embed=make_embed(f"⚠️ Failed to resume music after TTS: {e}", discord.Color.red(), title="Resume Error"))
+                    await log_embed(f"⚠️ Failed to resume music after TTS: {e}", discord.Color.red())
             await ctx.send(embed=make_embed(f"🗣️ Spoke your message in **{await get_user_voice(ctx.author.id)}** voice.", discord.Color.green(), title="TTS Complete"))
         except Exception as e:
             await ctx.send(embed=make_embed(f"⚠️ TTS playback error: {e}", discord.Color.red(), title="TTS Error"))
