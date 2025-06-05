@@ -9,7 +9,7 @@ import time
 import sqlite3
 import os
 import random
-
+###skbidi babidi boo 
 # Load config
 with open("config.json", "r") as f:
     config = json.load(f)
