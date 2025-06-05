@@ -405,26 +405,26 @@ async def on_ready():
     await log_embed("🎵 Music bot online.")
 
 @bot.event
-def on_command_error(ctx, error):
+async def on_command_error(ctx, error):
     # Prevent duplicate error messages
     if hasattr(ctx, 'handled_error') and ctx.handled_error:
         return
     ctx.handled_error = True
     if isinstance(error, commands.CommandNotFound):
         embed = make_embed("❌ Unknown command. Use `!commands` to see a list of available commands.", discord.Color.red(), title="Command Not Found")
-        ctx.send(embed=embed)
-        log_embed(f"⚠️ Command error: Command not found.", discord.Color.red())
+        await ctx.send(embed=embed)
+        await log_embed(f"⚠️ Command error: Command not found.", discord.Color.red())
     elif isinstance(error, commands.MissingRequiredArgument):
         embed = make_embed("❌ Missing argument. Check `!help` for usage.", discord.Color.orange(), title="Missing Argument")
-        ctx.send(embed=embed)
-        log_embed(f"⚠️ Command error: Missing argument.", discord.Color.red())
+        await ctx.send(embed=embed)
+        await log_embed(f"⚠️ Command error: Missing argument.", discord.Color.red())
     elif isinstance(error, commands.MissingPermissions):
         embed = make_embed("❌ You don't have permission to do that.", discord.Color.red(), title="Missing Permissions")
-        ctx.send(embed=embed)
-        log_embed(f"⚠️ Command error: Missing permissions.", discord.Color.red())
+        await ctx.send(embed=embed)
+        await log_embed(f"⚠️ Command error: Missing permissions.", discord.Color.red())
     else:
         embed = make_embed(f"❌ {error}", discord.Color.red(), title="Command Error")
-        ctx.send(embed=embed)
-        log_embed(f"⚠️ Command error: {error}", discord.Color.red())
+        await ctx.send(embed=embed)
+        await log_embed(f"⚠️ Command error: {error}", discord.Color.red())
 
 bot.run(TOKEN)
