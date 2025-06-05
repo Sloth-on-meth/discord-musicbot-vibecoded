@@ -245,7 +245,7 @@ async def play(ctx, *, query: str):
     except Exception as e:
         await msg.edit(embed=make_embed(f"❌ Error: {e}", discord.Color.red()))
 
-@bot.command(name="tittiestts")
+@bot.command(name="tts")
 async def tts(ctx, *, text: str):
     if len(text) > 1000:
         return await ctx.send("⚠️ Max 1000 characters.")
