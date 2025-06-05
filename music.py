@@ -196,7 +196,7 @@ class MusicPlayer:
                 
                 # Generate and play TTS
                 tts_text = "Queue empty. Disconnecting. Goodbye!"
-                tts_task = asyncio.create_task(generate_tts(tts_text))
+                tts_task = asyncio.create_task(generate_tts(tts_text, user_id=ctx.author.id))
                 
                 # Wait for TTS to be generated
                 tts_path = await tts_task
@@ -243,7 +243,7 @@ class MusicPlayer:
             await log_embed(f"▶️ Now playing: **{track.title}**", discord.Color.gold())
 
             tts_text = f"Now playing: {track.title}"
-            tts_task = asyncio.create_task(generate_tts(tts_text))
+            tts_task = asyncio.create_task(generate_tts(tts_text, user_id=ctx.author.id))
             audio_stream = discord.PCMVolumeTransformer(
                 discord.FFmpegPCMAudio(
                     track.url,
