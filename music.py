@@ -60,10 +60,14 @@ CREATE TABLE IF NOT EXISTS user_voice (
 conn.commit()
 
 # Helpers
-def make_embed(desc, color=discord.Color.blurple(), thumb=None):
+def make_embed(desc, color=discord.Color.blurple(), thumb=None, title=None, footer=None):
     embed = discord.Embed(description=desc, color=color, timestamp=discord.utils.utcnow())
+    if title:
+        embed.title = title
     if thumb:
         embed.set_thumbnail(url=thumb)
+    if footer:
+        embed.set_footer(text=footer)
     return embed
 
 async def log_embed(msg, color=discord.Color.blurple()):
@@ -163,7 +167,7 @@ class MusicPlayer:
             track = await self.pop_next(ctx.guild.id)
             if not track:
                 # Send text message
-                await ctx.send("✅ Queue empty. Disconnecting. Goodbye!")
+                await ctx.send(embed=make_embed("✅ Queue empty. Disconnecting. Goodbye!", discord.Color.green(), title="Queue Empty"))
                 
                 # Generate and play TTS
                 tts_text = "Queue empty. Disconnecting. Goodbye!"
@@ -201,11 +205,11 @@ class MusicPlayer:
                     except discord.errors.ClientException:
                         vc = ctx.guild.voice_client
                         if not vc:
-                            await ctx.send('⚠️ Failed to join voice channel.')
+                            await ctx.send(embed=make_embed('⚠️ Failed to join voice channel.', discord.Color.red(), title="Connection Error"))
                             await log_embed('⚠️ Failed to join voice channel.', discord.Color.red())
                             continue
                 else:
-                    await ctx.send('⚠️ You must be in a voice channel!')
+                    await ctx.send(embed=make_embed('⚠️ You must be in a voice channel!', discord.Color.orange(), title="Connection Error"))
                     await log_embed('⚠️ User not in a voice channel.', discord.Color.red())
                     continue
 
@@ -252,10 +256,10 @@ class MusicPlayer:
 
 music = MusicPlayer()
 
-@bot.command(name="play")
+@bot.command(name="play", help="Play a song from YouTube via search or URL.")
 async def play(ctx, *, query: str):
     if not ctx.author.voice:
-        return await ctx.send("❌ Join a voice channel first.")
+        return await ctx.send(embed=make_embed("❌ Join a voice channel first.", discord.Color.orange(), title="Connection Error"))
     msg = await ctx.send(embed=make_embed(f"🔍 Searching: `{query}`"))
     try:
         track = await AudioTrack.from_query(query)
@@ -264,32 +268,87 @@ async def play(ctx, *, query: str):
         await log_embed(f"✅ Queued by {ctx.author.display_name}: {track.title}")
         await music.start_loop(ctx, msg)
     except Exception as e:
-        await msg.edit(embed=make_embed(f"❌ Error: {e}", discord.Color.red()))
+        await msg.edit(embed=make_embed(f"❌ Error: {e}", discord.Color.red(), title="Error"))
 
-@bot.command(name="tts")
+@bot.command(name="commands", help="List all commands.")
+async def commands_list(ctx):
+    embed = discord.Embed(
+        title="Available Commands",
+        description="Here are all the commands you can use:",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+    for command in bot.commands:
+        embed.add_field(
+            name=f"!{command.name}",
+            value=command.help or "No description.",
+            inline=False
+        )
+    embed.set_footer(text="Use !help for more details on each command.")
+    await ctx.send(embed=embed)
+
+@bot.command(name="help", help="Show detailed help and bot features.")
+async def help_command(ctx):
+    embed = discord.Embed(
+        title="Music Bot Help",
+        description="A feature-rich Discord music bot with TTS and OpenAI voices!",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(
+        name="!play [query]",
+        value="Play a song from YouTube via search or URL.",
+        inline=False
+    )
+    embed.add_field(
+        name="!skip",
+        value="Skip the current song.",
+        inline=False
+    )
+    embed.add_field(
+        name="!stop",
+        value="Stop playback and disconnect the bot.",
+        inline=False
+    )
+    embed.add_field(
+        name="!showqueue",
+        value="Display the current music queue.",
+        inline=False
+    )
+    embed.add_field(
+        name="!tts [text]",
+        value="Speak a message in your chosen TTS voice in the voice channel.",
+        inline=False
+    )
+    embed.add_field(
+        name="!commands",
+        value="List all available commands.",
+        inline=False
+    )
+    embed.set_footer(text="Made with ❤️ using discord.py, yt-dlp, and OpenAI TTS.")
+    await ctx.send(embed=embed)
+
+@bot.command(name="tts", help="Speak a message in your voice in the current voice channel.")
 async def tts(ctx, *, text: str):
-    if len(text) > 1000:
-        return await ctx.send("⚠️ Max 1000 characters.")
-    if tts_lock.locked():
-        return await ctx.send("🔄 TTS is busy.")
+    """Generate TTS and play in voice. Usable at any time."""
     async with tts_lock:
         if not ctx.author.voice or not ctx.author.voice.channel:
-            await ctx.send("⚠️ You must be in a voice channel!")
+            await ctx.send(embed=make_embed("⚠️ You must be in a voice channel!", discord.Color.orange(), title="TTS Error"))
             await log_embed("⚠️ TTS playback error: Not connected to voice.", discord.Color.red())
             return
-        vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
+        vc = ctx.guild.voice_client
         if not vc or not vc.is_connected():
             try:
                 vc = await ctx.author.voice.channel.connect()
             except discord.errors.ClientException:
                 vc = ctx.guild.voice_client
                 if not vc:
-                    await ctx.send('⚠️ Failed to join voice channel.')
+                    await ctx.send(embed=make_embed('⚠️ Failed to join voice channel.', discord.Color.red(), title="TTS Error"))
                     await log_embed('⚠️ Failed to join voice channel.', discord.Color.red())
                     return
         tts_path = await generate_tts(text, user_id=ctx.author.id)
         if not tts_path:
-            await ctx.send("⚠️ TTS generation failed.")
+            await ctx.send(embed=make_embed("⚠️ TTS generation failed.", discord.Color.red(), title="TTS Error"))
             await log_embed("⚠️ TTS generation failed.", discord.Color.red())
             return
         done = asyncio.Event()
@@ -303,14 +362,16 @@ async def tts(ctx, *, text: str):
                 after=tts_done
             )
             await done.wait()
+            await ctx.send(embed=make_embed(f"🗣️ Spoke your message in **{await get_user_voice(ctx.author.id)}** voice.", discord.Color.green(), title="TTS Complete"))
         except Exception as e:
-            await ctx.send(f"⚠️ TTS playback error: {e}")
+            await ctx.send(embed=make_embed(f"⚠️ TTS playback error: {e}", discord.Color.red(), title="TTS Error"))
             await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
 
-@bot.command(name="showqueue")
+@bot.command(name="showqueue", help="Display the current music queue.")
 async def showqueue(ctx):
     queue = await music.show_queue(ctx.guild.id)
     if not queue:
+        await ctx.send(embed=make_embed("📭 The queue is empty.", discord.Color.orange(), title="Queue Empty"))
         await ctx.send("📭 The queue is empty.")
     else:
         msg = "\n".join(f"{i+1}. {title}" for i, title in enumerate(queue))
@@ -344,19 +405,26 @@ async def on_ready():
     await log_embed("🎵 Music bot online.")
 
 @bot.event
-async def on_command_error(ctx, error):
+def on_command_error(ctx, error):
+    # Prevent duplicate error messages
+    if hasattr(ctx, 'handled_error') and ctx.handled_error:
+        return
+    ctx.handled_error = True
     if isinstance(error, commands.CommandNotFound):
-        await ctx.send(f"⚠️ Command error: Command not found.")
-        await log_embed(f"⚠️ Command error: Command not found.", discord.Color.red())
+        embed = make_embed("❌ Unknown command. Use `!commands` to see a list of available commands.", discord.Color.red(), title="Command Not Found")
+        ctx.send(embed=embed)
+        log_embed(f"⚠️ Command error: Command not found.", discord.Color.red())
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"⚠️ Command error: Missing argument.")
-        await log_embed(f"⚠️ Command error: Missing argument.", discord.Color.red())
+        embed = make_embed("❌ Missing argument. Check `!help` for usage.", discord.Color.orange(), title="Missing Argument")
+        ctx.send(embed=embed)
+        log_embed(f"⚠️ Command error: Missing argument.", discord.Color.red())
     elif isinstance(error, commands.MissingPermissions):
-        await ctx.send(f"⚠️ Command error: Missing permissions.")
-        await log_embed(f"⚠️ Command error: Missing permissions.", discord.Color.red())
+        embed = make_embed("❌ You don't have permission to do that.", discord.Color.red(), title="Missing Permissions")
+        ctx.send(embed=embed)
+        log_embed(f"⚠️ Command error: Missing permissions.", discord.Color.red())
     else:
-        await ctx.send(f"⚠️ Command error: {error}")
-        await log_embed(f"⚠️ Command error: {error}", discord.Color.red())
-    await ctx.send(f"❌ Error: {str(error)}")
+        embed = make_embed(f"❌ {error}", discord.Color.red(), title="Command Error")
+        ctx.send(embed=embed)
+        log_embed(f"⚠️ Command error: {error}", discord.Color.red())
 
 bot.run(TOKEN)
