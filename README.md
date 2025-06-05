@@ -67,7 +67,20 @@ The bot will come online and respond to commands in your Discord server.
 
 ## Per-User TTS Voices
 
-Every user can select their own OpenAI TTS voice using `!ttsvoice <voice>`. The bot will remember your choice for all future TTS. To see your current voice and all available voices, just use `!ttsvoice` with no arguments.
+Every user can select their own OpenAI TTS voice using `!ttsvoice <voice>`. The bot will remember your choice for all future TTS, even after restarts—your selection is stored persistently in the database.
+
+## Seamless Music & TTS
+
+- When you use `!tts` while music is playing, the music will pause, play your TTS, and then resume from the exact point it was paused (not from the start).
+- This ensures smooth transitions and minimal interruption.
+
+## Persistent Queue and Settings
+
+- The music queue and all user settings (including TTS voices) are now fully persistent across bot restarts. The database is never reset on startup.
+
+## Changelog
+
+See [changelog.md](changelog.md) for a full history of updates and improvements.
 
 ## Notes
 
