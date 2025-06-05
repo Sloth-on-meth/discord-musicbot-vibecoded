@@ -50,6 +50,15 @@ CREATE TABLE queue (
 """)
 conn.commit()
 
+# Ensure user_voice table exists
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS user_voice (
+    user_id INTEGER PRIMARY KEY,
+    voice TEXT
+)
+""")
+conn.commit()
+
 # Helpers
 def make_embed(desc, color=discord.Color.blurple(), thumb=None):
     embed = discord.Embed(description=desc, color=color, timestamp=discord.utils.utcnow())
@@ -72,11 +81,23 @@ async def fetch_info(query: str):
     return await asyncio.to_thread(lambda: ytdl.extract_info(query, download=False))
 
 tts_lock = asyncio.Lock()
-TTS_VOICES = ["nova"]
+TTS_VOICES = ["nova", "echo", "fable", "onyx", "shimmer", "alloy", "daisy", "dewey", "dylan", "grace", "jane", "jason", "jenny", "karen", "kevin", "laura", "lisa", "logan", "matt", "melissa", "michael", "nancy", "paul", "richard", "samantha", "steven", "susan", "taylor", "william"]
 
-async def generate_tts(text: str) -> str:
+async def get_user_voice(user_id):
+    cursor.execute("SELECT voice FROM user_voice WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row else "nova"
+
+async def set_user_voice(user_id, voice):
+    cursor.execute("INSERT INTO user_voice (user_id, voice) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET voice=excluded.voice", (user_id, voice))
+    conn.commit()
+
+async def generate_tts(text: str, user_id=None) -> str:
     path = "now.mp3"
-    voice = random.choice(TTS_VOICES)
+    if user_id:
+        voice = await get_user_voice(user_id)
+    else:
+        voice = "nova"
     try:
         resp = await asyncio.to_thread(
             client.audio.speech.create,
@@ -266,7 +287,7 @@ async def tts(ctx, *, text: str):
                     await ctx.send('⚠️ Failed to join voice channel.')
                     await log_embed('⚠️ Failed to join voice channel.', discord.Color.red())
                     return
-        tts_path = await generate_tts(text)
+        tts_path = await generate_tts(text, user_id=ctx.author.id)
         if not tts_path:
             await ctx.send("⚠️ TTS generation failed.")
             await log_embed("⚠️ TTS generation failed.", discord.Color.red())
