@@ -174,7 +174,19 @@ class MusicPlayer:
             self.playing = True
             vc = ctx.guild.voice_client
             if not vc or not vc.is_connected():
-                vc = await ctx.author.voice.channel.connect()
+                if ctx.author.voice and ctx.author.voice.channel:
+                    try:
+                        vc = await ctx.author.voice.channel.connect()
+                    except discord.errors.ClientException:
+                        vc = ctx.guild.voice_client
+                        if not vc:
+                            await ctx.send('⚠️ Failed to join voice channel.')
+                            await log_embed('⚠️ Failed to join voice channel.', discord.Color.red())
+                            continue
+                else:
+                    await ctx.send('⚠️ You must be in a voice channel!')
+                    await log_embed('⚠️ User not in a voice channel.', discord.Color.red())
+                    continue
 
             await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=track.title))
             await message.edit(embed=make_embed(f"🎶 Now playing: **{track.title}**", discord.Color.gold(), thumb=track.thumbnail))
@@ -239,57 +251,40 @@ async def tts(ctx, *, text: str):
         return await ctx.send("⚠️ Max 1000 characters.")
     if tts_lock.locked():
         return await ctx.send("🔄 TTS is busy.")
-    vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
-    if not music.current or not vc.is_playing():
-        return await ctx.send("❌ Nothing currently playing to resume after TTS.")
-    if not music.start_time:
-        return await ctx.send("⚠️ Cannot resume from timestamp, start_time missing.")
-
-    elapsed = max(0, int(time.time() - music.start_time))
-
     async with tts_lock:
-        await ctx.send(embed=make_embed(f"🔊 Speaking: {text}"))
-
-        tts_task = asyncio.create_task(generate_tts(text))
-        resumed_audio = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(
-                music.current.url,
-                before_options=f"-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -vn",
-                options='-loglevel panic'
-            ),
-            volume=0.3
-        )
-
-        tts_path = await tts_task
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            await ctx.send("⚠️ You must be in a voice channel!")
+            await log_embed("⚠️ TTS playback error: Not connected to voice.", discord.Color.red())
+            return
+        vc = ctx.guild.voice_client or await ctx.author.voice.channel.connect()
+        if not vc or not vc.is_connected():
+            try:
+                vc = await ctx.author.voice.channel.connect()
+            except discord.errors.ClientException:
+                vc = ctx.guild.voice_client
+                if not vc:
+                    await ctx.send('⚠️ Failed to join voice channel.')
+                    await log_embed('⚠️ Failed to join voice channel.', discord.Color.red())
+                    return
+        tts_path = await generate_tts(text)
         if not tts_path:
-            return await ctx.send(embed=make_embed("❌ TTS generation failed.", discord.Color.red()))
-
-        vc.pause()
-        await asyncio.sleep(0.1)
-        tts_done = asyncio.Event()
-
-        def after_tts(_): bot.loop.call_soon_threadsafe(tts_done.set)
-
+            await ctx.send("⚠️ TTS generation failed.")
+            await log_embed("⚠️ TTS generation failed.", discord.Color.red())
+            return
+        done = asyncio.Event()
+        def tts_done(_): bot.loop.call_soon_threadsafe(done.set)
         try:
             vc.play(
                 discord.PCMVolumeTransformer(
                     discord.FFmpegPCMAudio(tts_path, options='-loglevel panic'),
                     volume=1.0
                 ),
-                after=after_tts
+                after=tts_done
             )
-            await tts_done.wait()
+            await done.wait()
         except Exception as e:
-            return await ctx.send(embed=make_embed(f"❌ Audio error: {e}", discord.Color.red()))
-
-        try:
-            music.start_time = time.time() - elapsed
-            vc.play(resumed_audio)
-            await ctx.send(embed=make_embed(f"🎵 Resumed at {elapsed}s"))
-        except Exception as e:
-            await ctx.send(embed=make_embed(f"⚠️ Failed to resume: {e}", discord.Color.red()))
-
-        await log_embed(f"TTS by {ctx.author.display_name}: {text} (resumed at {elapsed}s)")
+            await ctx.send(f"⚠️ TTS playback error: {e}")
+            await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
 
 @bot.command(name="showqueue")
 async def showqueue(ctx):
@@ -329,7 +324,18 @@ async def on_ready():
 
 @bot.event
 async def on_command_error(ctx, error):
-    await log_embed(f"⚠️ Command error: {str(error)}", discord.Color.red())
+    if isinstance(error, commands.CommandNotFound):
+        await ctx.send(f"⚠️ Command error: Command not found.")
+        await log_embed(f"⚠️ Command error: Command not found.", discord.Color.red())
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"⚠️ Command error: Missing argument.")
+        await log_embed(f"⚠️ Command error: Missing argument.", discord.Color.red())
+    elif isinstance(error, commands.MissingPermissions):
+        await ctx.send(f"⚠️ Command error: Missing permissions.")
+        await log_embed(f"⚠️ Command error: Missing permissions.", discord.Color.red())
+    else:
+        await ctx.send(f"⚠️ Command error: {error}")
+        await log_embed(f"⚠️ Command error: {error}", discord.Color.red())
     await ctx.send(f"❌ Error: {str(error)}")
 
 bot.run(TOKEN)
