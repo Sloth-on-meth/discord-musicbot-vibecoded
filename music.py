@@ -59,6 +59,10 @@ CREATE TABLE IF NOT EXISTS queue (
 """)
 conn.commit()
 
+# Clear the queue table on startup
+cursor.execute("DELETE FROM queue")
+conn.commit()
+
 # Ensure user_voice table exists
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS user_voice (
@@ -442,10 +446,10 @@ async def tts(ctx, *, text: str):
                     await ctx.send(embed=make_embed(f"⚠️ Failed to resume music after TTS: {e}", discord.Color.red(), title="Resume Error"))
                     await log_embed(f"⚠️ Failed to resume music after TTS: {e}", discord.Color.red())
             if ctx.channel.id == commands_channel_id:
-        await ctx.send(embed=make_embed(f"🗣️ Spoke your message in **{await get_user_voice(ctx.author.id)}** voice.", discord.Color.green(), title="TTS Complete"))
+                await ctx.send(embed=make_embed(f"🗣️ Spoke your message in **{await get_user_voice(ctx.author.id)}** voice.", discord.Color.green(), title="TTS Complete"))
         except Exception as e:
             if ctx.channel.id == commands_channel_id:
-        await ctx.send(embed=make_embed(f"⚠️ TTS playback error: {e}", discord.Color.red(), title="TTS Error"))
+                await ctx.send(embed=make_embed(f"⚠️ TTS playback error: {e}", discord.Color.red(), title="TTS Error"))
             await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
 
 @bot.command(name="showqueue", help="Display the current music queue.")
@@ -454,12 +458,12 @@ async def showqueue(ctx):
     queue = await music.show_queue(ctx.guild.id)
     if not queue:
         if ctx.channel.id == commands_channel_id:
-        await ctx.send(embed=make_embed("📭 The queue is empty.", discord.Color.orange(), title="Queue Empty"))
+            await ctx.send(embed=make_embed("📭 The queue is empty.", discord.Color.orange(), title="Queue Empty"))
         await ctx.send("📭 The queue is empty.")
     else:
         msg = "\n".join(f"{i+1}. {title}" for i, title in enumerate(queue))
         if ctx.channel.id == commands_channel_id:
-        await ctx.send(embed=make_embed(f"🎵 Queue:\n{msg}"))
+            await ctx.send(embed=make_embed(f"🎵 Queue:\n{msg}"))
 
 @bot.command(name="skip", help="Skip the current song.")
 @in_commands_channel()
@@ -468,12 +472,12 @@ async def skip(ctx):
     if vc and vc.is_playing():
         vc.stop()
         if ctx.channel.id == commands_channel_id:
-        await ctx.send("⏭ Skipped.")
+            await ctx.send("⏭ Skipped.")
         if ctx.channel.id == commands_channel_id:
-        await music.start_loop(ctx, await ctx.send("⏳ Loading next track..."))
+            await music.start_loop(ctx, await ctx.send("⏳ Loading next track..."))
     else:
         if ctx.channel.id == commands_channel_id:
-        await ctx.send("❌ Nothing is playing.")
+            await ctx.send("❌ Nothing is playing.")
 
 @bot.command(name="stop")
 async def stop(ctx):
