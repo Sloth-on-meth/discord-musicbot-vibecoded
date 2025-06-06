@@ -80,9 +80,8 @@ def make_embed(desc, color=discord.Color.blurple(), thumb=None, title=None, foot
     return embed
 
 async def log_embed(msg, color=discord.Color.blurple()):
-    if not log_channel_id:
-        return
-    channel = bot.get_channel(log_channel_id)
+    # Only send logs in the commands channel, else do nothing
+    channel = bot.get_channel(commands_channel_id)
     if channel:
         await channel.send(embed=make_embed(msg, color))
 
@@ -202,7 +201,8 @@ class MusicPlayer:
             track = await self.pop_next(ctx.guild.id)
             if not track:
                 # Send text message
-                await ctx.send(embed=make_embed("✅ Queue empty. Disconnecting. Goodbye!", discord.Color.green(), title="Queue Empty"))
+                if ctx.channel.id == commands_channel_id:
+                    await ctx.send(embed=make_embed("✅ Queue empty. Disconnecting. Goodbye!", discord.Color.green(), title="Queue Empty"))
                 
                 # Generate and play TTS
                 tts_text = "Queue empty. Disconnecting. Goodbye!"
@@ -441,9 +441,11 @@ async def tts(ctx, *, text: str):
                 except Exception as e:
                     await ctx.send(embed=make_embed(f"⚠️ Failed to resume music after TTS: {e}", discord.Color.red(), title="Resume Error"))
                     await log_embed(f"⚠️ Failed to resume music after TTS: {e}", discord.Color.red())
-            await ctx.send(embed=make_embed(f"🗣️ Spoke your message in **{await get_user_voice(ctx.author.id)}** voice.", discord.Color.green(), title="TTS Complete"))
+            if ctx.channel.id == commands_channel_id:
+        await ctx.send(embed=make_embed(f"🗣️ Spoke your message in **{await get_user_voice(ctx.author.id)}** voice.", discord.Color.green(), title="TTS Complete"))
         except Exception as e:
-            await ctx.send(embed=make_embed(f"⚠️ TTS playback error: {e}", discord.Color.red(), title="TTS Error"))
+            if ctx.channel.id == commands_channel_id:
+        await ctx.send(embed=make_embed(f"⚠️ TTS playback error: {e}", discord.Color.red(), title="TTS Error"))
             await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
 
 @bot.command(name="showqueue", help="Display the current music queue.")
@@ -451,10 +453,12 @@ async def tts(ctx, *, text: str):
 async def showqueue(ctx):
     queue = await music.show_queue(ctx.guild.id)
     if not queue:
+        if ctx.channel.id == commands_channel_id:
         await ctx.send(embed=make_embed("📭 The queue is empty.", discord.Color.orange(), title="Queue Empty"))
         await ctx.send("📭 The queue is empty.")
     else:
         msg = "\n".join(f"{i+1}. {title}" for i, title in enumerate(queue))
+        if ctx.channel.id == commands_channel_id:
         await ctx.send(embed=make_embed(f"🎵 Queue:\n{msg}"))
 
 @bot.command(name="skip", help="Skip the current song.")
@@ -463,9 +467,12 @@ async def skip(ctx):
     vc = ctx.guild.voice_client
     if vc and vc.is_playing():
         vc.stop()
+        if ctx.channel.id == commands_channel_id:
         await ctx.send("⏭ Skipped.")
+        if ctx.channel.id == commands_channel_id:
         await music.start_loop(ctx, await ctx.send("⏳ Loading next track..."))
     else:
+        if ctx.channel.id == commands_channel_id:
         await ctx.send("❌ Nothing is playing.")
 
 @bot.command(name="stop")
@@ -478,12 +485,13 @@ async def stop(ctx):
     music.start_time = None
     if music.loop_task and not music.loop_task.done():
         music.loop_task.cancel()
-    await ctx.send("🛑 Stopped and disconnected.")
+    if ctx.channel.id == commands_channel_id:
+        await ctx.send("🛑 Stopped and disconnected.")
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    await log_embed("🎵 Music bot online.")
+    # Do not send any message in any channel
 
 @bot.event
 async def on_command_error(ctx, error):
