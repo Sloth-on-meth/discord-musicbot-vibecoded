@@ -56,6 +56,8 @@ The bot will come online and respond to commands in your Discord server.
 
 ## Commands
 
+**Note:** If you use a music command in the wrong channel, the bot will not reply at all—no error, no message, and no log. Only commands sent in the configured music commands channel will be processed.
+
 - `!play [query]` — Play a song from YouTube via search or URL.
 - `!skip` — Skip the current song.
 - `!stop` — Stop playback and disconnect the bot.
@@ -83,6 +85,9 @@ Every user can select their own OpenAI TTS voice using `!ttsvoice <voice>`. The 
 See [changelog.md](changelog.md) for a full history of updates and improvements.
 
 ## Notes
+
+- If you use a music command in a channel other than the configured music commands channel, the bot will simply ignore it and do nothing (no error, no message, no log).
+
 
 - Ensure the bot has permissions to connect and speak in voice channels.
 - You must be in a voice channel to use music or TTS commands.

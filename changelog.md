@@ -2,6 +2,10 @@
 
 All notable changes to this Discord Music Bot will be documented here.
 
+## [2025-06-06]
+### Changed
+- Bot now ignores commands sent in the wrong channel (no error, no reply, no log).
+
 ## [2025-06-05]
 ### Added
 - Persistent per-user TTS voice selection across restarts (stored in database).

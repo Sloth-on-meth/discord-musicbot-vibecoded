@@ -16,6 +16,7 @@ with open("config.json", "r") as f:
 
 TOKEN = config["token"]
 log_channel_id = config.get("musicbot_log_channel")
+commands_channel_id = int(config.get("musicbot_commands_channel"))
 client = openai.OpenAI(api_key=config["openai_api_key"])
 
 # Prepare yt_dlp
@@ -32,6 +33,16 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+# Decorator to restrict command usage to the configured channel
+from functools import wraps
+
+def in_commands_channel():
+    def predicate(ctx):
+        if ctx.channel.id != commands_channel_id:
+            return False
+        return True
+    return commands.check(predicate)
 
 # Setup DB (reset each run)
 conn = sqlite3.connect("queue.db")
@@ -91,6 +102,7 @@ async def get_user_voice(user_id):
     return row[0] if row else "nova"
 
 @bot.command(name="ttsvoice", help="Set or show your TTS voice. Usage: !ttsvoice <voice>")
+@in_commands_channel()
 async def ttsvoice(ctx, *, voice: str = None):
     """Set or show your TTS voice. Usage: !ttsvoice <voice>"""
     if voice is None:
@@ -280,6 +292,7 @@ class MusicPlayer:
 music = MusicPlayer()
 
 @bot.command(name="play", help="Play a song from YouTube via search or URL.")
+@in_commands_channel()
 async def play(ctx, *, query: str):
     if not ctx.author.voice:
         return await ctx.send(embed=make_embed("❌ Join a voice channel first.", discord.Color.orange(), title="Connection Error"))
@@ -294,6 +307,7 @@ async def play(ctx, *, query: str):
         await msg.edit(embed=make_embed(f"❌ Error: {e}", discord.Color.red(), title="Error"))
 
 @bot.command(name="commands", help="List all commands.")
+@in_commands_channel()
 async def commands_list(ctx):
     embed = discord.Embed(
         title="Available Commands",
@@ -311,6 +325,7 @@ async def commands_list(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="help", help="Show detailed help and bot features.")
+@in_commands_channel()
 async def help_command(ctx):
     embed = discord.Embed(
         title="Music Bot Help",
@@ -352,6 +367,7 @@ async def help_command(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="tts", help="Speak a message in your voice in the current voice channel.")
+@in_commands_channel()
 async def tts(ctx, *, text: str):
     """Generate TTS and play in voice. Usable at any time."""
     async with tts_lock:
@@ -431,6 +447,7 @@ async def tts(ctx, *, text: str):
             await log_embed(f"⚠️ TTS playback error: {e}", discord.Color.red())
 
 @bot.command(name="showqueue", help="Display the current music queue.")
+@in_commands_channel()
 async def showqueue(ctx):
     queue = await music.show_queue(ctx.guild.id)
     if not queue:
@@ -440,7 +457,8 @@ async def showqueue(ctx):
         msg = "\n".join(f"{i+1}. {title}" for i, title in enumerate(queue))
         await ctx.send(embed=make_embed(f"🎵 Queue:\n{msg}"))
 
-@bot.command(name="skip")
+@bot.command(name="skip", help="Skip the current song.")
+@in_commands_channel()
 async def skip(ctx):
     vc = ctx.guild.voice_client
     if vc and vc.is_playing():
@@ -485,6 +503,11 @@ async def on_command_error(ctx, error):
         embed = make_embed("❌ You don't have permission to do that.", discord.Color.red(), title="Missing Permissions")
         await ctx.send(embed=embed)
         await log_embed(f"⚠️ Command error: Missing permissions.", discord.Color.red())
+    # If the error is a failed check due to wrong channel, do nothing
+    elif isinstance(error, commands.CheckFailure):
+        # Only ignore if it's due to the in_commands_channel check
+        # (all music commands requiring the channel use this check)
+        return
     else:
         embed = make_embed(f"❌ {error}", discord.Color.red(), title="Command Error")
         await ctx.send(embed=embed)
